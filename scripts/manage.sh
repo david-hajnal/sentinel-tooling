@@ -6,7 +6,7 @@ set -e
 
 SERVICE_NAME_LEGACY="sentinel_rtp_cam"
 SERVICE_NAME_FORWARD="sentinel_rtp_cam_forward"
-CONFIG_FILE="/etc/sentinel_rtp_cam/env"
+CONFIG_JSON="/etc/sentinel_rtp_cam/config.json"
 CLIPS_DIR="/var/lib/sentinel_rtp_cam/clips"
 FORWARD_BIN="/usr/local/bin/${SERVICE_NAME_FORWARD}"
 FORWARD_SERVICE_FILE="/etc/systemd/system/${SERVICE_NAME_FORWARD}.service"
@@ -41,7 +41,7 @@ show_usage() {
     echo ""
     echo "Mode selection:"
     echo "  - If no mode is passed, the script defaults to forward mode."
-    echo "  - Set AGENT_MODE=forward|legacy in $CONFIG_FILE to pin the mode."
+    echo "  - Set forward_agent.mode in $CONFIG_JSON to pin the mode."
     echo "  - If forward service is missing but ${FORWARD_BIN} exists, the script will create it."
 }
 
@@ -99,6 +99,7 @@ LockPersonality=true
 LimitNOFILE=65536
 
 # Environment
+Environment=AGENT_CONFIG_JSON=/etc/sentinel_rtp_cam/config.json
 EnvironmentFile=/etc/sentinel_rtp_cam/env
 
 # Execution
@@ -123,16 +124,49 @@ EOF
     return 0
 }
 
+json_get() {
+    local key="$1"
+    if [[ ! -f "$CONFIG_JSON" ]]; then
+        return
+    fi
+    python3 - "$CONFIG_JSON" "$key" <<'PY'
+import json
+import sys
+
+path = sys.argv[1]
+key = sys.argv[2]
+try:
+    with open(path, "r", encoding="utf-8") as fh:
+        data = json.load(fh)
+except Exception:
+    sys.exit(0)
+
+cur = data
+for part in key.split("."):
+    if isinstance(cur, dict) and part in cur:
+        cur = cur[part]
+    else:
+        sys.exit(0)
+
+if cur is None:
+    sys.exit(0)
+if isinstance(cur, bool):
+    print("true" if cur else "false")
+elif isinstance(cur, (int, float, str)):
+    print(cur)
+PY
+}
+
 resolve_mode() {
     local mode="${1:-}"
-    if [[ -z "$mode" && -f "$CONFIG_FILE" ]]; then
-        mode=$(grep -E '^AGENT_MODE=' "$CONFIG_FILE" | tail -n 1 | cut -d= -f2-)
+    if [[ -z "$mode" && -f "$CONFIG_JSON" ]]; then
+        mode=$(json_get "forward_agent.mode")
         case "$mode" in
             forward|legacy) ;;
             *) mode="" ;;
         esac
         if [[ -z "$mode" ]]; then
-            if grep -Eq '^SERVER_ADDR=' "$CONFIG_FILE"; then
+            if [[ -n "$(json_get "forward_agent.server_addr")" ]]; then
                 mode="forward"
             fi
         fi
@@ -171,7 +205,7 @@ resolve_service() {
 
 cmd_config() {
     check_root
-    nano "$CONFIG_FILE"
+    nano "$CONFIG_JSON"
 }
 
 cmd_clips() {

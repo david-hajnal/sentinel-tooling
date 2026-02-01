@@ -22,6 +22,7 @@ readonly BINARY_NAME="sentinel_rtp_cam"
 readonly FORWARD_BINARY_NAME="sentinel_rtp_cam_forward"
 readonly INSTALL_DIR="/usr/local/bin"
 readonly CONFIG_DIR="/etc/${BINARY_NAME}"
+readonly CONFIG_JSON="${CONFIG_DIR}/config.json"
 readonly STATE_DIR="/var/lib/${BINARY_NAME}"
 readonly SERVICE_NAME="${BINARY_NAME}"
 readonly FORWARD_SERVICE_NAME="${FORWARD_BINARY_NAME}"
@@ -58,6 +59,106 @@ log_dry() {
 die() {
     log_error "$*"
     exit 1
+}
+
+ensure_config_json() {
+    if [[ -f "$CONFIG_JSON" ]]; then
+        return
+    fi
+
+    log_warn "Config JSON not found, creating: $CONFIG_JSON"
+    mkdir -p "$CONFIG_DIR"
+    cat > "$CONFIG_JSON" <<'EOF'
+{
+  "cameras": [
+    {
+      "id": null,
+      "token": null,
+      "user": null,
+      "pass": null,
+      "stream_id": null,
+      "transport": null,
+      "motion": {
+        "enabled": null
+      },
+      "features": {
+        "local_clip_enabled": null,
+        "rtsp_receiver_enabled": null
+      },
+      "rtsp": {
+        "url": null,
+        "host": null,
+        "port": null,
+        "path": null
+      },
+      "onvif": {
+        "host": null,
+        "port": null,
+        "debug": null,
+        "dump_xml": null,
+        "sub_termination": null,
+        "renew_every_secs": null,
+        "pull_timeout": null,
+        "pull_limit": null,
+        "resubscribe_after_errors": null,
+        "min_poll_gap_ms": null,
+        "after_sub_delay_ms": null,
+        "connrefused_retries": null,
+        "connrefused_backoff_ms": null
+      }
+    }
+  ],
+  "server": {
+    "enabled": null,
+    "base_url": null,
+    "bearer_token": null,
+    "retry_interval_secs": null,
+    "max_retries": null
+  },
+  "cleanup": {
+    "interval_secs": null,
+    "min_free_bytes": null
+  },
+  "local_clip": {
+    "dir": null,
+    "pre_roll_secs": null,
+    "post_roll_secs": null,
+    "min_duration_secs": null,
+    "flush_secs": null,
+    "stale_part_secs": null,
+    "write_batch_bytes": null,
+    "max_files": null,
+    "max_age_secs": null,
+    "max_total_bytes": null,
+    "max_bytes": null,
+    "max_secs": null,
+    "fps": null,
+    "stream_copy": null,
+    "audio_enabled": null
+  },
+  "ingest": {
+    "clip_dir": null,
+    "clip_pre_secs": null,
+    "clip_post_secs": null,
+    "clip_ring_secs": null,
+    "clip_stale_part_secs": null,
+    "clip_max_secs": null
+  },
+  "forward_agent": {
+    "mode": null,
+    "server_addr": null,
+    "motion_merge_secs": null
+  },
+  "logging": {
+    "rust_log": null
+  },
+  "version": {
+    "sentinel_version": null
+  }
+}
+EOF
+    chmod 600 "$CONFIG_JSON"
+    log_info "Config JSON created. Update it before starting the agent."
 }
 
 check_root() {
@@ -330,6 +431,8 @@ main() {
 
     check_root
     echo "Root check passed."
+    log_info "Config JSON path: $CONFIG_JSON"
+    ensure_config_json
     # Check if service is installed
     if [[ ! -f "${INSTALL_DIR}/${BINARY_NAME}" ]]; then
         die "Service not installed. Install the binary + systemd unit first (see README_DEPLOY.md)."
