@@ -762,7 +762,7 @@ cmd_update() {
 # Main command dispatcher
 case "${1:-}" in
     config)
-        cmd_config
+        cmd_config "$@"
         ;;
     clips|ls)
         cmd_clips
