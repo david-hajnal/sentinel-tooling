@@ -15,6 +15,12 @@ chmod +x /tmp/sentinel-manage.sh
 sudo /tmp/sentinel-manage.sh --help
 ```
 
+## One-line install
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/david-hajnal/sentinel-tooling/main/init.sh -o /tmp/sentinel-init.sh && sudo bash /tmp/sentinel-init.sh
+```
+
 ## Install as system command
 
 ```bash

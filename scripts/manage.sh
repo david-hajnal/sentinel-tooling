@@ -27,7 +27,7 @@ show_usage() {
     echo "  config       Edit camera configuration (default)"
     echo "  config server Edit server configuration"
     echo "  config camera Edit camera configuration"
-    echo "  init         Generate registration token + machine id"
+    echo "  init         Initialize agent (server setup + registration token)"
     echo "  clips        List clips in storage directory"
     echo "  restart      Restart the service"
     echo "  stop         Stop the service"
@@ -156,12 +156,13 @@ die() {
     exit 1
 }
 
-json_get() {
-    local key="$1"
-    if [[ ! -f "$CAMERA_CONFIG_JSON" ]]; then
+json_get_file() {
+    local file="$1"
+    local key="$2"
+    if [[ -z "$file" || ! -f "$file" ]]; then
         return
     fi
-    python3 - "$CAMERA_CONFIG_JSON" "$key" <<'PY'
+    python3 - "$file" "$key" <<'PY'
 import json
 import sys
 
@@ -187,6 +188,11 @@ if isinstance(cur, bool):
 elif isinstance(cur, (int, float, str)):
     print(cur)
 PY
+}
+
+json_get() {
+    local key="$1"
+    json_get_file "$CAMERA_CONFIG_JSON" "$key"
 }
 
 resolve_mode() {
@@ -415,6 +421,135 @@ EOF
     chmod 600 "$CAMERA_CONFIG_JSON"
 }
 
+update_server_json() {
+    local base_url="$1"
+    local bearer_token="$2"
+
+    python3 - "$SERVER_CONFIG_JSON" "$base_url" "$bearer_token" <<'PY'
+import json
+import sys
+
+path = sys.argv[1]
+base_url = sys.argv[2].strip()
+bearer = sys.argv[3].strip()
+
+try:
+    with open(path, "r", encoding="utf-8") as fh:
+        data = json.load(fh)
+except Exception:
+    data = {}
+
+if not isinstance(data, dict):
+    data = {}
+
+server = data.get("server")
+if not isinstance(server, dict):
+    server = {}
+
+if base_url:
+    server["base_url"] = base_url.rstrip("/")
+if bearer:
+    server["bearer_token"] = bearer
+if base_url or bearer:
+    server["enabled"] = True
+
+data["server"] = server
+
+with open(path, "w", encoding="utf-8") as fh:
+    json.dump(data, fh, indent=2)
+PY
+    chmod 600 "$SERVER_CONFIG_JSON"
+}
+
+pull_remote_config() {
+    local base_url="$1"
+    local bearer_token="$2"
+    local camera_hint="${3:-}"
+
+    if [[ -z "$base_url" || -z "$bearer_token" ]]; then
+        log_warn "Missing server base URL or bearer token; skipping config pull."
+        return 0
+    fi
+
+    local url="${base_url%/}/api/v1/config"
+    local tmp
+    tmp=$(mktemp)
+    local header_args=(-H "Authorization: Bearer ${bearer_token}")
+    if [[ -n "$camera_hint" ]]; then
+        header_args+=(-H "x-camera-id: ${camera_hint}")
+    fi
+
+    if ! curl -fsS "${header_args[@]}" "$url" -o "$tmp"; then
+        rm -f "$tmp"
+        log_warn "No config pulled from server (missing or unauthorized)."
+        return 0
+    fi
+
+    if ! python3 - "$SERVER_CONFIG_JSON" "$CAMERA_CONFIG_JSON" < "$tmp" <<'PY'
+import json
+import sys
+
+server_path = sys.argv[1]
+camera_path = sys.argv[2]
+
+try:
+    payload = json.load(sys.stdin)
+except Exception:
+    sys.stderr.write("Invalid JSON payload\n")
+    sys.exit(1)
+
+config = payload.get("config")
+if not isinstance(config, dict):
+    sys.stderr.write("Missing config payload\n")
+    sys.exit(1)
+
+def load(path):
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+            if isinstance(data, dict):
+                return data
+    except Exception:
+        pass
+    return {}
+
+def merge(base, update):
+    if isinstance(base, dict) and isinstance(update, dict):
+        for key, value in update.items():
+            if key in base:
+                base[key] = merge(base[key], value)
+            else:
+                base[key] = value
+        return base
+    return update
+
+server_update = config.get("server") if isinstance(config.get("server"), dict) else None
+if server_update is not None:
+    server_value = load(server_path)
+    if not isinstance(server_value.get("server"), dict):
+        server_value["server"] = {}
+    server_value["server"] = merge(server_value["server"], server_update)
+    with open(server_path, "w", encoding="utf-8") as fh:
+        json.dump(server_value, fh, indent=2)
+
+camera_update = dict(config)
+camera_update.pop("server", None)
+camera_value = load(camera_path)
+camera_value = merge(camera_value, camera_update)
+with open(camera_path, "w", encoding="utf-8") as fh:
+    json.dump(camera_value, fh, indent=2)
+PY
+    then
+        rm -f "$tmp"
+        log_warn "Failed to parse config payload from server."
+        return 0
+    fi
+
+    rm -f "$tmp"
+    chmod 600 "$SERVER_CONFIG_JSON" "$CAMERA_CONFIG_JSON"
+    log_info "Pulled camera config from server."
+}
+
 cmd_init() {
     check_root
 
@@ -500,6 +635,40 @@ EOF
     if [[ -z "$jwt_secret" ]]; then
         log_warn "SENTINEL_INIT_JWT_SECRET not set; generated unsigned JWT."
     fi
+
+    local existing_base_url
+    existing_base_url=$(json_get_file "$SERVER_CONFIG_JSON" "server.base_url")
+    local default_base_url="${existing_base_url:-${SENTINEL_SERVER_BASE_URL:-}}"
+    local server_base_url=""
+    if [[ -n "$default_base_url" ]]; then
+        read -p "Server base URL [${default_base_url}]: " server_base_url
+        server_base_url="${server_base_url:-$default_base_url}"
+    else
+        read -p "Server base URL: " server_base_url
+    fi
+
+    local existing_token
+    existing_token=$(json_get_file "$SERVER_CONFIG_JSON" "server.bearer_token")
+    local bearer_token=""
+    if [[ -n "$existing_token" ]]; then
+        read -s -p "Bearer token (leave blank to keep existing): " bearer_token
+        echo ""
+        bearer_token="${bearer_token:-$existing_token}"
+    else
+        read -s -p "Bearer token: " bearer_token
+        echo ""
+    fi
+
+    if [[ -n "$server_base_url" || -n "$bearer_token" ]]; then
+        update_server_json "$server_base_url" "$bearer_token"
+        log_info "Server config updated: ${SERVER_CONFIG_JSON}"
+    else
+        log_warn "Server base URL or bearer token not set; server.json unchanged."
+    fi
+
+    pull_remote_config "$server_base_url" "$bearer_token"
+
+    cmd_start
 }
 
 update_detect_arch() {
