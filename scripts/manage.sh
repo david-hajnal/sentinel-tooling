@@ -36,7 +36,7 @@ show_usage() {
     echo "  logs         Follow live logs"
     echo "  logs-recent  Show recent logs (last 50 lines)"
     echo "  clean        Delete all clips (with confirmation)"
-    echo "  update       Download and install updated binaries"
+    echo "  update       Download and install updated binaries (no auto-start)"
     echo ""
     echo "Examples:"
     echo "  $0 config camera"
@@ -47,6 +47,7 @@ show_usage() {
     echo "  $0 start legacy"
     echo "  $0 logs"
     echo "  $0 update latest"
+    echo "  $0 update latest --start"
     echo "  $0 update v0.6.2 --dry-run"
     echo ""
     echo "Mode selection:"
@@ -856,11 +857,15 @@ cmd_update() {
     UPDATE_BASE_URL="${SENTINEL_BASE_URL:-https://github.com/${UPDATE_REPO}/releases/download}"
     UPDATE_VERSION="${SENTINEL_VERSION:-latest}"
     UPDATE_DRY_RUN=0
+    UPDATE_START_AFTER=0
 
     local args=("$@")
     local idx=0
     while [[ $idx -lt ${#args[@]} ]]; do
         case "${args[$idx]}" in
+            --start)
+                UPDATE_START_AFTER=1
+                ;;
             --dry-run)
                 UPDATE_DRY_RUN=1
                 ;;
@@ -878,6 +883,7 @@ cmd_update() {
     log_info "Target version: $UPDATE_VERSION"
     log_info "Server config JSON: $UPDATE_SERVER_JSON"
     log_info "Camera config JSON: $UPDATE_CAMERA_JSON"
+    log_info "Start services after update: $UPDATE_START_AFTER"
 
     update_ensure_config_json
     update_install_manage_script
@@ -923,7 +929,11 @@ cmd_update() {
         update_install_new_binary_to "$new_forward_binary" "${UPDATE_INSTALL_DIR}/${UPDATE_FORWARD_BINARY_NAME}"
     fi
 
-    update_restart_service
+    if [[ $UPDATE_START_AFTER -eq 1 ]]; then
+        update_restart_service
+    else
+        log_info "Update installed; not starting services (use --start to start)."
+    fi
 }
 
 # Main command dispatcher
