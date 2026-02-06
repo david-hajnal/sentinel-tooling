@@ -45,3 +45,10 @@ install_manage() {
 }
 
 install_manage
+
+if [[ -x "$DEST" ]]; then
+    log "Starting sentinel-manage init..."
+    "$DEST" init
+else
+    log "sentinel-manage not found at $DEST; skipping init"
+fi

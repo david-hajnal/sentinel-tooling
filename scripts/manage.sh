@@ -27,7 +27,7 @@ show_usage() {
     echo "  config       Edit camera configuration (default)"
     echo "  config server Edit server configuration"
     echo "  config camera Edit camera configuration"
-    echo "  init         Initialize agent (server setup + registration token)"
+    echo "  init         Initialize agent (server setup + registration token; does not start)"
     echo "  clips        List clips in storage directory"
     echo "  restart      Restart the service"
     echo "  stop         Stop the service"
@@ -638,12 +638,51 @@ EOF
     local existing_base_url
     existing_base_url=$(json_get_file "$SERVER_CONFIG_JSON" "server.base_url")
     local default_base_url="${existing_base_url:-${SENTINEL_SERVER_BASE_URL:-}}"
-    local server_base_url=""
+    local default_scheme=""
+    local default_host=""
+    local default_port=""
     if [[ -n "$default_base_url" ]]; then
-        read -p "Server base URL [${default_base_url}]: " server_base_url
-        server_base_url="${server_base_url:-$default_base_url}"
+        read -r default_scheme default_host default_port < <(python3 - "$default_base_url" <<'PY'
+import sys
+from urllib.parse import urlparse
+
+raw = sys.argv[1].strip()
+if "://" not in raw:
+    raw = "http://" + raw
+parsed = urlparse(raw)
+scheme = parsed.scheme or "http"
+host = parsed.hostname or ""
+port = parsed.port or ""
+print(scheme, host, port)
+PY
+)
+    fi
+    default_scheme="${default_scheme:-http}"
+    default_port="${default_port:-8000}"
+
+    local server_scheme=""
+    local server_host=""
+    local server_port=""
+    read -p "Server scheme (http/https) [${default_scheme}]: " server_scheme
+    server_scheme="${server_scheme:-$default_scheme}"
+    case "$server_scheme" in
+        http|https) ;;
+        *) log_warn "Unknown scheme '$server_scheme'; defaulting to ${default_scheme}"; server_scheme="$default_scheme" ;;
+    esac
+
+    if [[ -n "$default_host" ]]; then
+        read -p "Server host [${default_host}]: " server_host
+        server_host="${server_host:-$default_host}"
     else
-        read -p "Server base URL: " server_base_url
+        read -p "Server host: " server_host
+    fi
+
+    read -p "Server port [${default_port}]: " server_port
+    server_port="${server_port:-$default_port}"
+
+    local server_base_url=""
+    if [[ -n "$server_host" ]]; then
+        server_base_url="${server_scheme}://${server_host}:${server_port}"
     fi
 
     local existing_token
@@ -667,7 +706,7 @@ EOF
 
     pull_remote_config "$server_base_url" "$bearer_token"
 
-    cmd_start
+    log_info "Init complete. Start the agent with: sudo sentinel-manage start"
 }
 
 update_detect_arch() {
