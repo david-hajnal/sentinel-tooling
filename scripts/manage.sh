@@ -111,8 +111,6 @@ LimitNOFILE=65536
 # Environment
 Environment=SERVER_CONFIG_JSON=/etc/sentinel_rtp_cam/server.json
 Environment=CAMERA_CONFIG_JSON=/etc/sentinel_rtp_cam/camera.json
-EnvironmentFile=/etc/sentinel_rtp_cam/env
-
 # Execution
 ExecStart=$FORWARD_BIN
 
