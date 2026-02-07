@@ -354,6 +354,10 @@ cmd_tls() {
 
     mkdir -p "$CONFIG_DIR"
 
+    if [[ "$ca_path" == "/tmp/ca.crt" && -f "$ca_path" ]]; then
+        chmod 644 "$ca_path" || log_warn "Failed to chmod 644 $ca_path"
+    fi
+
     if [[ -n "$ca_path" && -f "$ca_path" ]]; then
         install -m 0644 "$ca_path" "$TLS_CA_CERT"
         log_info "Installed CA cert: ${TLS_CA_CERT}"
