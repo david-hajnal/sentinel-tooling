@@ -12,6 +12,11 @@ CAMERA_CONFIG_JSON="${CONFIG_DIR}/camera.json"
 CLIPS_DIR="/var/lib/sentinel_rtp_cam/clips"
 FORWARD_BIN="/usr/local/bin/${SERVICE_NAME_FORWARD}"
 FORWARD_SERVICE_FILE="/etc/systemd/system/${SERVICE_NAME_FORWARD}.service"
+TLS_DIR="${CONFIG_DIR}/tls"
+TLS_CA_CERT="${CONFIG_DIR}/ca.crt"
+TLS_SERVER_CERT="${CONFIG_DIR}/server.crt"
+TLS_SERVER_KEY="${CONFIG_DIR}/server.key"
+TLS_AUTH_JSON="${TLS_DIR}/auth.json"
 
 # Colors
 RED='\033[0;31m'
@@ -28,6 +33,7 @@ show_usage() {
     echo "  config server Edit server configuration"
     echo "  config camera Edit camera configuration"
     echo "  init         Initialize agent (server setup + registration token; does not start)"
+    echo "  tls          Install TLS certs/keys from a staging directory"
     echo "  clips        List clips in storage directory"
     echo "  restart      Restart the service"
     echo "  stop         Stop the service"
@@ -42,6 +48,7 @@ show_usage() {
     echo "  $0 config camera"
     echo "  $0 config server"
     echo "  $0 init"
+    echo "  $0 tls --src /tmp"
     echo "  $0 restart"
     echo "  $0 start forward"
     echo "  $0 start legacy"
@@ -258,6 +265,121 @@ cmd_config() {
             exit 1
             ;;
     esac
+}
+
+tls_usage() {
+    echo "Usage: $0 tls [--src DIR] [--ca PATH] [--server-cert PATH] [--server-key PATH] [--auth PATH]"
+    echo ""
+    echo "Defaults to looking in /tmp for:"
+    echo "  /tmp/ca.crt"
+    echo "  /tmp/server.crt"
+    echo "  /tmp/server.key"
+    echo "  /tmp/auth.json"
+    echo ""
+    echo "Only ca.crt is required on the agent. server.crt/server.key/auth.json are for the ingest server."
+}
+
+print_tls_copy_hint() {
+    cat <<'EOF'
+Copy the TLS files to this machine, for example:
+  scp -i ~/.ssh/agent /path/to/ca.crt dietpi@<agent-ip>:/tmp/ca.crt
+  scp -i ~/.ssh/agent /path/to/server.crt dietpi@<agent-ip>:/tmp/server.crt
+  scp -i ~/.ssh/agent /path/to/server.key dietpi@<agent-ip>:/tmp/server.key
+  scp -i ~/.ssh/agent /path/to/auth.json dietpi@<agent-ip>:/tmp/auth.json
+
+Then run:
+  sudo sentinel-manage tls --src /tmp
+EOF
+}
+
+cmd_tls() {
+    check_root
+    shift
+    local src="${SENTINEL_TLS_SRC:-/tmp}"
+    local ca_path=""
+    local server_cert_path=""
+    local server_key_path=""
+    local auth_path=""
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --src)
+                src="$2"
+                shift 2
+                ;;
+            --ca)
+                ca_path="$2"
+                shift 2
+                ;;
+            --server-cert)
+                server_cert_path="$2"
+                shift 2
+                ;;
+            --server-key)
+                server_key_path="$2"
+                shift 2
+                ;;
+            --auth)
+                auth_path="$2"
+                shift 2
+                ;;
+            -h|--help)
+                tls_usage
+                return 0
+                ;;
+            *)
+                shift
+                ;;
+        esac
+    done
+
+    if [[ -z "$ca_path" && -f "${src}/ca.crt" ]]; then
+        ca_path="${src}/ca.crt"
+    fi
+    if [[ -z "$server_cert_path" && -f "${src}/server.crt" ]]; then
+        server_cert_path="${src}/server.crt"
+    fi
+    if [[ -z "$server_key_path" && -f "${src}/server.key" ]]; then
+        server_key_path="${src}/server.key"
+    fi
+    if [[ -z "$auth_path" && -f "${src}/auth.json" ]]; then
+        auth_path="${src}/auth.json"
+    fi
+
+    if [[ -z "$ca_path" && -z "$server_cert_path" && -z "$server_key_path" && -z "$auth_path" ]]; then
+        log_warn "No TLS files found in ${src}."
+        print_tls_copy_hint
+        return 1
+    fi
+
+    mkdir -p "$CONFIG_DIR"
+
+    if [[ -n "$ca_path" && -f "$ca_path" ]]; then
+        install -m 0644 "$ca_path" "$TLS_CA_CERT"
+        log_info "Installed CA cert: ${TLS_CA_CERT}"
+    else
+        log_warn "CA cert not found; TLS verification will fail on the agent."
+    fi
+
+    if [[ -n "$server_cert_path" || -n "$server_key_path" ]]; then
+        if [[ -z "$server_cert_path" || -z "$server_key_path" ]]; then
+            log_warn "Server cert/key incomplete; skipping server cert install."
+        else
+            install -m 0644 "$server_cert_path" "$TLS_SERVER_CERT"
+            install -m 0600 "$server_key_path" "$TLS_SERVER_KEY"
+            log_info "Installed server cert/key: ${TLS_SERVER_CERT}, ${TLS_SERVER_KEY}"
+        fi
+    fi
+
+    if [[ -n "$auth_path" && -f "$auth_path" ]]; then
+        mkdir -p "$TLS_DIR"
+        install -m 0644 "$auth_path" "$TLS_AUTH_JSON"
+        log_info "Installed auth map: ${TLS_AUTH_JSON}"
+    fi
+
+    if [[ -n "$server_cert_path" || -n "$server_key_path" || -n "$auth_path" ]]; then
+        log_info "Note: server.crt/server.key/auth.json are only needed on the ingest server."
+    fi
 }
 
 cmd_clips() {
@@ -865,8 +987,15 @@ update_restart_service() {
 }
 
 update_ensure_config_json() {
-    ensure_server_json
-    ensure_camera_json
+    if [[ ! -d "$CONFIG_DIR" ]]; then
+        mkdir -p "$CONFIG_DIR"
+    fi
+    if [[ ! -f "$SERVER_CONFIG_JSON" ]]; then
+        log_warn "Server config JSON missing; update will not create it. Run: sudo sentinel-manage init or config server"
+    fi
+    if [[ ! -f "$CAMERA_CONFIG_JSON" ]]; then
+        log_warn "Camera config JSON missing; update will not create it. Run: sudo sentinel-manage config camera"
+    fi
 }
 
 update_install_manage_script() {
@@ -1006,6 +1135,9 @@ case "${1:-}" in
         ;;
     init)
         cmd_init
+        ;;
+    tls)
+        cmd_tls "$@"
         ;;
     update)
         shift

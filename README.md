@@ -44,6 +44,9 @@ sudo sentinel-manage start
 sudo sentinel-manage status
 sudo sentinel-manage logs
 
+# TLS cert install (agent uses ca.crt; server cert/key/auth.json optional)
+sudo sentinel-manage tls --src /tmp
+
 # Update binaries from GitHub releases
 sudo sentinel-manage update latest
 sudo sentinel-manage update v0.6.4 --dry-run
