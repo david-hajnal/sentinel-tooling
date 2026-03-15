@@ -9,6 +9,7 @@ SERVICE_NAME_FORWARD="sentinel_rtp_cam_forward"
 CONFIG_DIR="/etc/sentinel_rtp_cam"
 SERVER_CONFIG_JSON="${CONFIG_DIR}/server.json"
 CAMERA_CONFIG_JSON="${CONFIG_DIR}/camera.json"
+VERSION_FILE="${CONFIG_DIR}/firmware-version"
 CLIPS_DIR="/var/lib/sentinel_rtp_cam/clips"
 FORWARD_BIN="/usr/local/bin/${SERVICE_NAME_FORWARD}"
 FORWARD_SERVICE_FILE="/etc/systemd/system/${SERVICE_NAME_FORWARD}.service"
@@ -846,7 +847,39 @@ update_detect_arch() {
 }
 
 update_get_installed_version() {
-    echo 1
+    local version=""
+
+    if [[ -f "$VERSION_FILE" ]]; then
+        version=$(tr -d '[:space:]' < "$VERSION_FILE")
+    fi
+
+    if [[ -z "$version" ]]; then
+        version=$(json_get_file "$CAMERA_CONFIG_JSON" "version.sentinel_version")
+    fi
+
+    if [[ -n "$version" ]]; then
+        echo "$version"
+        return
+    fi
+
+    echo "unknown"
+}
+
+update_write_installed_version() {
+    local version="$1"
+
+    if [[ -z "$version" || "$version" == "latest" ]]; then
+        return
+    fi
+
+    if [[ $UPDATE_DRY_RUN -eq 1 ]]; then
+        log_dry "Would record installed version: $version -> $VERSION_FILE"
+        return
+    fi
+
+    mkdir -p "$CONFIG_DIR"
+    printf '%s\n' "$version" > "$VERSION_FILE"
+    chmod 600 "$VERSION_FILE"
 }
 
 update_download_and_verify() {
@@ -869,6 +902,8 @@ update_download_and_verify() {
     else
         log_info "Using specified version: v$version"
     fi
+
+    UPDATE_RESOLVED_VERSION="$version"
 
     local tarball_name="${UPDATE_BINARY_NAME}-${version}-${arch}.tar.gz"
     local download_url="${UPDATE_BASE_URL}/v${version}/${tarball_name}"
@@ -1100,6 +1135,7 @@ cmd_update() {
     if [[ -f "$new_forward_binary" ]]; then
         update_install_new_binary_to "$new_forward_binary" "${UPDATE_INSTALL_DIR}/${UPDATE_FORWARD_BINARY_NAME}"
     fi
+    update_write_installed_version "$UPDATE_RESOLVED_VERSION"
 
     if [[ $UPDATE_START_AFTER -eq 1 ]]; then
         update_restart_service
