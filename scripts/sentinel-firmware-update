@@ -1,0 +1,121 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+show_usage() {
+    cat <<'EOF'
+Usage: sentinel-firmware-update <version|latest> [--start]
+       sentinel-firmware-update --rollback [--start]
+
+Agent firmware updater wrapper for managed jobs.
+
+Installs as: /usr/local/bin/sentinel-firmware-update
+Agent config: FIRMWARE_UPDATER_CMD=/usr/local/bin/sentinel-firmware-update
+Version file: /etc/sentinel_rtp_cam/firmware-version
+
+Examples:
+  sentinel-firmware-update 1.1.3
+  sentinel-firmware-update 1.1.3 --start
+  sentinel-firmware-update latest
+  sentinel-firmware-update --rollback
+  sentinel-firmware-update --rollback --start
+
+Notes:
+  - Version arguments are normalized before delegating to sentinel-manage update.
+  - Rollback is not currently implemented by sentinel-tooling.
+EOF
+}
+
+die() {
+    echo "[sentinel-firmware-update] $*" >&2
+    exit 1
+}
+
+normalize_version() {
+    local version="$1"
+
+    if [[ "$version" == "latest" ]]; then
+        printf '%s\n' "$version"
+        return
+    fi
+
+    printf '%s\n' "${version#v}"
+}
+
+resolve_manage_cmd() {
+    if command -v sentinel-manage >/dev/null 2>&1; then
+        command -v sentinel-manage
+        return
+    fi
+
+    local script_dir
+    script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+    if [[ -x "${script_dir}/manage.sh" ]]; then
+        printf '%s\n' "${script_dir}/manage.sh"
+        return
+    fi
+
+    if [[ -x "${script_dir}/sentinel-manage" ]]; then
+        printf '%s\n' "${script_dir}/sentinel-manage"
+        return
+    fi
+
+    return 1
+}
+
+main() {
+    local target_version=""
+    local start_after=0
+    local rollback=0
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --start)
+                start_after=1
+                ;;
+            --rollback)
+                rollback=1
+                ;;
+            --help|-h|help)
+                show_usage
+                exit 0
+                ;;
+            --*)
+                die "Unknown option: $1"
+                ;;
+            *)
+                if [[ -n "$target_version" ]]; then
+                    die "Unexpected extra argument: $1"
+                fi
+                target_version="$1"
+                ;;
+        esac
+        shift
+    done
+
+    if [[ $rollback -eq 1 ]]; then
+        if [[ -n "$target_version" ]]; then
+            die "Do not pass a target version with --rollback."
+        fi
+        die "Rollback is not supported by sentinel-tooling yet. Existing update flow only creates .prev backups; no rollback command is implemented."
+    fi
+
+    if [[ -z "$target_version" ]]; then
+        show_usage >&2
+        exit 1
+    fi
+
+    local manage_cmd
+    if ! manage_cmd="$(resolve_manage_cmd)"; then
+        die "Could not find sentinel-manage in PATH or alongside this script."
+    fi
+
+    local args=("update" "$(normalize_version "$target_version")")
+    if [[ $start_after -eq 1 ]]; then
+        args+=("--start")
+    fi
+
+    exec "$manage_cmd" "${args[@]}"
+}
+
+main "$@"

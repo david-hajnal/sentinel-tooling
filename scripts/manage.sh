@@ -43,7 +43,7 @@ show_usage() {
     echo "  logs         Follow live logs"
     echo "  logs-recent  Show recent logs (last 50 lines)"
     echo "  clean        Delete all clips (with confirmation)"
-    echo "  update       Download and install updated binaries (no auto-start)"
+    echo "  update       Download and install updated binaries (records /etc/sentinel_rtp_cam/firmware-version)"
     echo ""
     echo "Examples:"
     echo "  $0 config camera"
@@ -56,7 +56,7 @@ show_usage() {
     echo "  $0 logs"
     echo "  $0 update latest"
     echo "  $0 update latest --start"
-    echo "  $0 update v0.6.2 --dry-run"
+    echo "  $0 update 0.6.2 --dry-run"
     echo ""
     echo "Mode selection:"
     echo "  - If no mode is passed, the script defaults to forward mode."
@@ -1038,15 +1038,25 @@ update_ensure_config_json() {
 }
 
 update_install_manage_script() {
-    local manage_src
-    manage_src="$(cd "$(dirname "$0")" && pwd)/manage.sh"
+    local script_dir
+    script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    local manage_src="${script_dir}/$(basename "${BASH_SOURCE[0]}")"
     local manage_dst="/usr/local/bin/sentinel-manage"
-    if [[ ! -f "$manage_src" ]]; then
-        log_warn "manage.sh not found at $manage_src; skipping install"
-        return
+    if [[ -f "$manage_src" && "$manage_src" != "$manage_dst" ]]; then
+        cp -f "$manage_src" "$manage_dst"
+        chmod 755 "$manage_dst"
     fi
-    cp -f "$manage_src" "$manage_dst"
-    chmod 755 "$manage_dst"
+
+    local firmware_src="${script_dir}/sentinel-firmware-update"
+    local firmware_dst="/usr/local/bin/sentinel-firmware-update"
+    if [[ -f "$firmware_src" ]]; then
+        if [[ "$firmware_src" != "$firmware_dst" ]]; then
+            cp -f "$firmware_src" "$firmware_dst"
+            chmod 755 "$firmware_dst"
+        fi
+    else
+        log_warn "sentinel-firmware-update not found at $firmware_src; skipping install"
+    fi
 }
 
 cmd_update() {
