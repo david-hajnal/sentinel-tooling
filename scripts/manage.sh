@@ -1057,6 +1057,17 @@ update_install_manage_script() {
     else
         log_warn "sentinel-firmware-update not found at $firmware_src; skipping install"
     fi
+
+    local dispatch_src="${script_dir}/sentinel-firmware-update-dispatch"
+    local dispatch_dst="/usr/local/bin/sentinel-firmware-update-dispatch"
+    if [[ -f "$dispatch_src" ]]; then
+        if [[ "$dispatch_src" != "$dispatch_dst" ]]; then
+            cp -f "$dispatch_src" "$dispatch_dst"
+            chmod 755 "$dispatch_dst"
+        fi
+    else
+        log_warn "sentinel-firmware-update-dispatch not found at $dispatch_src; skipping install"
+    fi
 }
 
 cmd_update() {

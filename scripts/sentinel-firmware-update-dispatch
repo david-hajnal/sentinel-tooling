@@ -1,0 +1,187 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+STATE_DIR="${SENTINEL_FIRMWARE_UPDATER_STATE_DIR:-/var/lib/sentinel_rtp_cam/firmware-updater}"
+REQUEST_DIR="${STATE_DIR}/requests"
+RESULT_DIR="${STATE_DIR}/results"
+LOCK_FILE="${STATE_DIR}/dispatch.lock"
+VERSION_FILE="${SENTINEL_FIRMWARE_VERSION_FILE:-/etc/sentinel_rtp_cam/firmware-version}"
+MANAGE_CMD="${SENTINEL_MANAGE_CMD:-/usr/local/bin/sentinel-manage}"
+
+normalize_version() {
+    local version="$1"
+
+    if [[ "$version" == "latest" ]]; then
+        printf '%s\n' "$version"
+        return
+    fi
+
+    version="${version#v}"
+    if [[ -z "$version" || "$version" == -* || ! "$version" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]]; then
+        return 1
+    fi
+
+    printf '%s\n' "$version"
+}
+
+write_result() {
+    local result_path="$1"
+    local exit_code="$2"
+    local message="$3"
+    local log_path="$4"
+    local tmp_result="${result_path}.tmp"
+
+    {
+        printf 'exit_code=%s\n' "$exit_code"
+        printf 'message=%s\n' "$message"
+        printf 'log_path=%s\n' "$log_path"
+    } > "$tmp_result"
+
+    mv -f "$tmp_result" "$result_path"
+    chmod 664 "$result_path"
+}
+
+parse_request() {
+    local request_path="$1"
+    REQUEST_ACTION=""
+    REQUEST_VERSION=""
+    REQUEST_START="0"
+
+    while IFS= read -r line; do
+        case "$line" in
+            action=*)
+                REQUEST_ACTION="${line#action=}"
+                ;;
+            version=*)
+                REQUEST_VERSION="${line#version=}"
+                ;;
+            start=*)
+                REQUEST_START="${line#start=}"
+                ;;
+        esac
+    done < "$request_path"
+
+    [[ -n "$REQUEST_ACTION" && -n "$REQUEST_VERSION" ]]
+}
+
+process_request() {
+    local request_path="$1"
+    local request_name
+    request_name="$(basename "$request_path" .req)"
+    local result_path="${RESULT_DIR}/${request_name}.result"
+    local log_path="${RESULT_DIR}/${request_name}.log"
+
+    : > "$log_path"
+    chmod 664 "$log_path"
+
+    if ! parse_request "$request_path"; then
+        echo "Invalid request file: $request_path" > "$log_path"
+        write_result "$result_path" 1 "Invalid firmware update request. See $log_path." "$log_path"
+        rm -f "$request_path"
+        return
+    fi
+
+    if [[ "$REQUEST_ACTION" != "update" ]]; then
+        echo "Unsupported action: $REQUEST_ACTION" > "$log_path"
+        write_result "$result_path" 1 "Unsupported firmware update action: $REQUEST_ACTION." "$log_path"
+        rm -f "$request_path"
+        return
+    fi
+
+    if [[ "$REQUEST_START" != "0" && "$REQUEST_START" != "1" ]]; then
+        echo "Invalid start flag: $REQUEST_START" > "$log_path"
+        write_result "$result_path" 1 "Invalid firmware update request. See $log_path." "$log_path"
+        rm -f "$request_path"
+        return
+    fi
+
+    local normalized_version
+    if ! normalized_version="$(normalize_version "$REQUEST_VERSION")"; then
+        echo "Unsupported version: $REQUEST_VERSION" > "$log_path"
+        write_result "$result_path" 1 "Unsupported firmware target version: $REQUEST_VERSION." "$log_path"
+        rm -f "$request_path"
+        return
+    fi
+
+    if [[ ! -x "$MANAGE_CMD" ]]; then
+        echo "Missing updater command: $MANAGE_CMD" > "$log_path"
+        write_result "$result_path" 1 "Missing updater command: $MANAGE_CMD." "$log_path"
+        rm -f "$request_path"
+        return
+    fi
+
+    local args=("update" "$normalized_version")
+    if [[ "$REQUEST_START" == "1" ]]; then
+        args+=("--start")
+    fi
+
+    if "$MANAGE_CMD" "${args[@]}" > "$log_path" 2>&1; then
+        local installed_version=""
+        if [[ -f "$VERSION_FILE" ]]; then
+            installed_version="$(tr -d '[:space:]' < "$VERSION_FILE")"
+        fi
+
+        local message="Firmware update completed."
+        if [[ -n "$installed_version" ]]; then
+            message="Firmware update completed: ${installed_version}."
+        fi
+
+        write_result "$result_path" 0 "$message" "$log_path"
+    else
+        local exit_code=$?
+        write_result "$result_path" "$exit_code" "Firmware update failed. See $log_path." "$log_path"
+    fi
+
+    rm -f "$request_path"
+}
+
+acquire_lock() {
+    if command -v flock >/dev/null 2>&1; then
+        exec 9>"$LOCK_FILE"
+        if ! flock -n 9; then
+            exit 0
+        fi
+        return
+    fi
+
+    local lock_dir="${LOCK_FILE}.lock"
+    if ! mkdir "$lock_dir" 2>/dev/null; then
+        exit 0
+    fi
+    trap 'rm -rf "'"$lock_dir"'"' EXIT
+}
+
+main() {
+    umask 0002
+    mkdir -p "$REQUEST_DIR" "$RESULT_DIR"
+    touch "$LOCK_FILE"
+
+    acquire_lock
+
+    shopt -s nullglob
+
+    local idle_checks=0
+    while true; do
+        local processed=0
+        local request_path=""
+
+        for request_path in "$REQUEST_DIR"/*.req; do
+            processed=1
+            process_request "$request_path"
+        done
+
+        if [[ $processed -eq 1 ]]; then
+            idle_checks=0
+            continue
+        fi
+
+        idle_checks=$((idle_checks + 1))
+        if [[ $idle_checks -ge 2 ]]; then
+            break
+        fi
+
+        sleep 1
+    done
+}
+
+main "$@"

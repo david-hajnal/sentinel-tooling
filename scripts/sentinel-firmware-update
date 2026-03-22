@@ -1,16 +1,21 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+STATE_DIR="${SENTINEL_FIRMWARE_UPDATER_STATE_DIR:-/var/lib/sentinel_rtp_cam/firmware-updater}"
+REQUEST_DIR="${STATE_DIR}/requests"
+RESULT_DIR="${STATE_DIR}/results"
+WAIT_TIMEOUT_SECONDS="${SENTINEL_FIRMWARE_UPDATER_TIMEOUT:-900}"
+
 show_usage() {
     cat <<'EOF'
 Usage: sentinel-firmware-update <version|latest> [--start]
        sentinel-firmware-update --rollback [--start]
 
-Agent firmware updater wrapper for managed jobs.
+Agent firmware updater request wrapper.
 
 Installs as: /usr/local/bin/sentinel-firmware-update
-Agent config: FIRMWARE_UPDATER_CMD=/usr/local/bin/sentinel-firmware-update
-Version file: /etc/sentinel_rtp_cam/firmware-version
+Default agent config: FIRMWARE_UPDATER_CMD=/usr/local/bin/sentinel-firmware-update
+Version file written by successful updates: /etc/sentinel_rtp_cam/firmware-version
 
 Examples:
   sentinel-firmware-update 1.1.3
@@ -20,7 +25,7 @@ Examples:
   sentinel-firmware-update --rollback --start
 
 Notes:
-  - Version arguments are normalized before delegating to sentinel-manage update.
+  - This command is unprivileged; a root-owned systemd service performs the update.
   - Rollback is not currently implemented by sentinel-tooling.
 EOF
 }
@@ -38,33 +43,100 @@ normalize_version() {
         return
     fi
 
-    printf '%s\n' "${version#v}"
+    version="${version#v}"
+    if [[ -z "$version" || "$version" == -* || ! "$version" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]]; then
+        return 1
+    fi
+
+    printf '%s\n' "$version"
 }
 
-resolve_manage_cmd() {
-    if command -v sentinel-manage >/dev/null 2>&1; then
-        command -v sentinel-manage
-        return
+ensure_queue_ready() {
+    if [[ ! -d "$REQUEST_DIR" || ! -w "$REQUEST_DIR" ]]; then
+        die "Firmware updater request queue is not available at $REQUEST_DIR. Install managed firmware updater support first."
     fi
 
-    local script_dir
-    script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    if [[ ! -d "$RESULT_DIR" || ! -r "$RESULT_DIR" || ! -x "$RESULT_DIR" ]]; then
+        die "Firmware updater result directory is not available at $RESULT_DIR. Install managed firmware updater support first."
+    fi
+}
 
-    if [[ -x "${script_dir}/manage.sh" ]]; then
-        printf '%s\n' "${script_dir}/manage.sh"
-        return
+write_request() {
+    local version="$1"
+    local start_after="$2"
+    local request_id="$3"
+    local request_path="${REQUEST_DIR}/${request_id}.req"
+    local tmp_request
+
+    tmp_request="$(mktemp "${REQUEST_DIR}/.sentinel-firmware-update.${request_id}.XXXXXX")"
+    {
+        printf 'action=update\n'
+        printf 'version=%s\n' "$version"
+        printf 'start=%s\n' "$start_after"
+    } > "$tmp_request"
+    mv -f "$tmp_request" "$request_path"
+
+    printf '%s\n' "$request_path"
+}
+
+read_result() {
+    local result_path="$1"
+    local exit_code=""
+    local message=""
+    local log_path=""
+
+    while IFS= read -r line; do
+        case "$line" in
+            exit_code=*)
+                exit_code="${line#exit_code=}"
+                ;;
+            message=*)
+                message="${line#message=}"
+                ;;
+            log_path=*)
+                log_path="${line#log_path=}"
+                ;;
+        esac
+    done < "$result_path"
+
+    if [[ -z "$exit_code" ]]; then
+        die "Dispatcher returned an invalid result file: $result_path"
     fi
 
-    if [[ -x "${script_dir}/sentinel-manage" ]]; then
-        printf '%s\n' "${script_dir}/sentinel-manage"
-        return
+    if [[ -n "$message" ]]; then
+        if [[ "$exit_code" == "0" ]]; then
+            echo "$message"
+        else
+            echo "$message" >&2
+        fi
     fi
 
-    return 1
+    if [[ "$exit_code" != "0" && -n "$log_path" && -f "$log_path" ]]; then
+        cat "$log_path" >&2
+    fi
+
+    exit "$exit_code"
+}
+
+wait_for_result() {
+    local request_id="$1"
+    local result_path="${RESULT_DIR}/${request_id}.result"
+    local waited=0
+
+    while (( waited < WAIT_TIMEOUT_SECONDS )); do
+        if [[ -f "$result_path" ]]; then
+            read_result "$result_path"
+        fi
+        sleep 1
+        waited=$((waited + 1))
+    done
+
+    die "Timed out waiting for the root firmware updater dispatcher. Check sentinel-firmware-update-dispatch.path and sentinel-firmware-update-dispatch.service."
 }
 
 main() {
     local target_version=""
+    local normalized_version=""
     local start_after=0
     local rollback=0
 
@@ -105,17 +177,16 @@ main() {
         exit 1
     fi
 
-    local manage_cmd
-    if ! manage_cmd="$(resolve_manage_cmd)"; then
-        die "Could not find sentinel-manage in PATH or alongside this script."
+    if ! normalized_version="$(normalize_version "$target_version")"; then
+        die "Unsupported target version: $target_version"
     fi
 
-    local args=("update" "$(normalize_version "$target_version")")
-    if [[ $start_after -eq 1 ]]; then
-        args+=("--start")
-    fi
+    ensure_queue_ready
 
-    exec "$manage_cmd" "${args[@]}"
+    local request_id
+    request_id="$(date +%s)-$$-${RANDOM}"
+    write_request "$normalized_version" "$start_after" "$request_id" >/dev/null
+    wait_for_result "$request_id"
 }
 
 main "$@"

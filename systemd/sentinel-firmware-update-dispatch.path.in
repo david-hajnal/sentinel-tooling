@@ -1,0 +1,9 @@
+[Unit]
+Description=Watch for Sentinel Firmware Update Requests
+
+[Path]
+PathExistsGlob=@STATE_DIR@/requests/*.req
+Unit=sentinel-firmware-update-dispatch.service
+
+[Install]
+WantedBy=multi-user.target

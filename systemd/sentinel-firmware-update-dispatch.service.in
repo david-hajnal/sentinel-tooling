@@ -1,0 +1,11 @@
+[Unit]
+Description=Sentinel Firmware Update Dispatcher
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+Environment=SENTINEL_FIRMWARE_UPDATER_STATE_DIR=@STATE_DIR@
+ExecStart=@INSTALL_BIN_DIR@/sentinel-firmware-update-dispatch
