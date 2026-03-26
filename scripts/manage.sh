@@ -76,6 +76,16 @@ systemd_service_exists() {
     systemctl cat "${service}.service" >/dev/null 2>&1
 }
 
+systemd_service_enabled() {
+    local service="$1"
+    systemctl is-enabled "${service}.service" >/dev/null 2>&1
+}
+
+systemd_service_active() {
+    local service="$1"
+    systemctl is-active --quiet "${service}.service"
+}
+
 forward_binary_exists() {
     [[ -x "$FORWARD_BIN" ]]
 }
@@ -140,6 +150,69 @@ EOF
     chmod 644 "$FORWARD_SERVICE_FILE"
     systemctl daemon-reload
     return 0
+}
+
+start_or_restart_service() {
+    local service="$1"
+    if systemd_service_active "$service"; then
+        systemctl restart "$service"
+    else
+        systemctl start "$service"
+    fi
+}
+
+reconcile_service_state() {
+    local mode="${1:-}"
+    local legacy_active=0
+    local forward_active=0
+    local desired_service=""
+    local desired_mode=""
+    local inactive_service=""
+
+    if systemd_service_active "$SERVICE_NAME_LEGACY"; then
+        legacy_active=1
+    fi
+    if systemd_service_active "$SERVICE_NAME_FORWARD"; then
+        forward_active=1
+    fi
+
+    resolve_service "$mode"
+    desired_service="$ACTIVE_SERVICE"
+    desired_mode="$ACTIVE_MODE"
+
+    if ! systemd_service_exists "$desired_service"; then
+        log_warn "Desired ${desired_mode} service (${desired_service}) is not installed; leaving service state unchanged."
+        return 0
+    fi
+
+    if [[ "$desired_service" == "$SERVICE_NAME_FORWARD" ]]; then
+        inactive_service="$SERVICE_NAME_LEGACY"
+    else
+        inactive_service="$SERVICE_NAME_FORWARD"
+    fi
+
+    if systemd_service_exists "$inactive_service"; then
+        if systemd_service_active "$inactive_service"; then
+            log_info "Stopping inactive service: ${inactive_service}"
+            systemctl stop "$inactive_service"
+        fi
+        if systemd_service_enabled "$inactive_service"; then
+            log_info "Disabling inactive service: ${inactive_service}"
+            systemctl disable "$inactive_service"
+        fi
+    fi
+
+    if ! systemd_service_enabled "$desired_service"; then
+        log_info "Enabling ${desired_mode} service: ${desired_service}"
+        systemctl enable "$desired_service"
+    fi
+
+    if (( legacy_active || forward_active )); then
+        log_info "Applying config with ${desired_service} (${desired_mode})"
+        start_or_restart_service "$desired_service"
+    else
+        log_info "Service mode set to ${desired_mode}; leaving the agent stopped."
+    fi
 }
 
 log_info() {
@@ -832,6 +905,7 @@ PY
     fi
 
     pull_remote_config "$server_base_url" "$bearer_token"
+    reconcile_service_state
 
     log_info "Init complete. Start the agent with: sudo sentinel-manage start"
 }
