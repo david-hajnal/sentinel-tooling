@@ -319,6 +319,116 @@ print(data["cameras"][0]["user"])
 PY
 )"
 assert_contains "${CAMERA_USER}" "alice" "raw payload should update camera config"
+SERVER_TOKEN="$(python3 - "${SERVER_CONFIG_JSON}" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], "r", encoding="utf-8") as fh:
+    data = json.load(fh)
+
+print(data["server"]["bearer_token"])
+PY
+)"
+assert_contains "${SERVER_TOKEN}" "remote-token" "raw payload should update non-null server fields"
+
+setup_scenario "config-pull-preserves-local-server-credentials-on-null"
+mkdir -p "${CONFIG_DIR}"
+cat > "${SERVER_CONFIG_JSON}" <<'EOF'
+{
+  "server": {
+    "base_url": "https://example.test:443",
+    "bearer_token": "device-token",
+    "enabled": true
+  }
+}
+EOF
+cat > "${CAMERA_CONFIG_JSON}" <<'EOF'
+{
+  "existing": true
+}
+EOF
+NULL_SERVER_RESPONSE="${SCENARIO_DIR}/config-response-null-server.json"
+cat > "${NULL_SERVER_RESPONSE}" <<'EOF'
+{
+  "server": {
+    "base_url": null,
+    "bearer_token": null,
+    "enabled": null
+  },
+  "cameras": [
+    {
+      "camera_id": "cam-1",
+      "user": "alice"
+    }
+  ]
+}
+EOF
+export TEST_CURL_RESPONSE_FILE="${NULL_SERVER_RESPONSE}"
+export TEST_CURL_EXIT_CODE=0
+NULL_PULL_OUTPUT="$(pull_remote_config "https://example.test:443" "device-token" 2>&1 || true)"
+assert_contains "${NULL_PULL_OUTPUT}" "Pulled camera config from server." "null server payload should still update camera config"
+NULL_SERVER_STATE="$(python3 - "${SERVER_CONFIG_JSON}" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], "r", encoding="utf-8") as fh:
+    data = json.load(fh)
+
+print(data["server"]["base_url"])
+print(data["server"]["bearer_token"])
+PY
+)"
+assert_contains "${NULL_SERVER_STATE}" "https://example.test:443" "null server payload should preserve local base_url"
+assert_contains "${NULL_SERVER_STATE}" "device-token" "null server payload should preserve local bearer token"
+
+setup_scenario "config-pull-ignores-empty-string-server-overrides"
+mkdir -p "${CONFIG_DIR}"
+cat > "${SERVER_CONFIG_JSON}" <<'EOF'
+{
+  "server": {
+    "base_url": "https://example.test:443",
+    "bearer_token": "device-token",
+    "enabled": true
+  }
+}
+EOF
+cat > "${CAMERA_CONFIG_JSON}" <<'EOF'
+{
+  "existing": true
+}
+EOF
+EMPTY_SERVER_RESPONSE="${SCENARIO_DIR}/config-response-empty-server.json"
+cat > "${EMPTY_SERVER_RESPONSE}" <<'EOF'
+{
+  "server": {
+    "base_url": "",
+    "bearer_token": ""
+  },
+  "cameras": [
+    {
+      "camera_id": "cam-1",
+      "user": "alice"
+    }
+  ]
+}
+EOF
+export TEST_CURL_RESPONSE_FILE="${EMPTY_SERVER_RESPONSE}"
+export TEST_CURL_EXIT_CODE=0
+EMPTY_PULL_OUTPUT="$(pull_remote_config "https://example.test:443" "device-token" 2>&1 || true)"
+assert_contains "${EMPTY_PULL_OUTPUT}" "Pulled camera config from server." "empty-string server payload should still update camera config"
+EMPTY_SERVER_STATE="$(python3 - "${SERVER_CONFIG_JSON}" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], "r", encoding="utf-8") as fh:
+    data = json.load(fh)
+
+print(data["server"]["base_url"])
+print(data["server"]["bearer_token"])
+PY
+)"
+assert_contains "${EMPTY_SERVER_STATE}" "https://example.test:443" "empty-string server payload should preserve local base_url"
+assert_contains "${EMPTY_SERVER_STATE}" "device-token" "empty-string server payload should preserve local bearer token"
 
 setup_scenario "config-pull-invalid-json"
 mkdir -p "${CONFIG_DIR}"

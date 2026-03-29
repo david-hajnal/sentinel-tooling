@@ -758,12 +758,46 @@ def merge(base, update):
         return base
     return update
 
+def merge_non_null_server(base_server, server_update):
+    if not isinstance(base_server, dict):
+        base_server = {}
+    if not isinstance(server_update, dict):
+        return base_server
+
+    merged = dict(base_server)
+
+    base_url = server_update.get("base_url")
+    if isinstance(base_url, str):
+        base_url = base_url.strip()
+        if base_url:
+            merged["base_url"] = base_url.rstrip("/")
+
+    bearer_token = server_update.get("bearer_token")
+    if isinstance(bearer_token, str):
+        bearer_token = bearer_token.strip()
+        if bearer_token:
+            merged["bearer_token"] = bearer_token
+
+    enabled = server_update.get("enabled")
+    if isinstance(enabled, bool):
+        merged["enabled"] = enabled
+
+    retry_interval_secs = server_update.get("retry_interval_secs")
+    if isinstance(retry_interval_secs, (int, float)) and not isinstance(retry_interval_secs, bool):
+        merged["retry_interval_secs"] = retry_interval_secs
+
+    max_retries = server_update.get("max_retries")
+    if isinstance(max_retries, (int, float)) and not isinstance(max_retries, bool):
+        merged["max_retries"] = max_retries
+
+    return merged
+
 server_update = config.get("server") if isinstance(config.get("server"), dict) else None
 if server_update is not None:
     server_value = load(server_path)
     if not isinstance(server_value.get("server"), dict):
         server_value["server"] = {}
-    server_value["server"] = merge(server_value["server"], server_update)
+    server_value["server"] = merge_non_null_server(server_value["server"], server_update)
     with open(server_path, "w", encoding="utf-8") as fh:
         json.dump(server_value, fh, indent=2)
 
