@@ -997,18 +997,33 @@ update_download_and_verify() {
 
     UPDATE_RESOLVED_VERSION="$version"
 
-    local tarball_name="${UPDATE_BINARY_NAME}-${version}-${arch}.tar.gz"
-    local download_url="${UPDATE_BASE_URL}/v${version}/${tarball_name}"
-    local checksum_url="${UPDATE_BASE_URL}/v${version}/${tarball_name}.sha256"
     local temp_dir
     temp_dir=$(mktemp -d)
-    local tarball_path="${temp_dir}/${tarball_name}"
+    local asset_base=""
+    local tarball_name=""
+    local tarball_path=""
+    local checksum_url=""
+    local download_url=""
+    local candidate
+    for candidate in "$UPDATE_BINARY_NAME" "agent_forward"; do
+        tarball_name="${candidate}-${version}-${arch}.tar.gz"
+        tarball_path="${temp_dir}/${tarball_name}"
+        download_url="${UPDATE_BASE_URL}/v${version}/${tarball_name}"
 
-    log_info "Downloading ${tarball_name}..."
-    log_info "From: $download_url"
-    log_info "To: $tarball_path"
+        log_info "Downloading ${tarball_name}..."
+        log_info "From: $download_url"
+        log_info "To: $tarball_path"
 
-    if ! curl -fL --progress-bar --max-time 300 -o "$tarball_path" "$download_url"; then
+        if curl -fL --progress-bar --max-time 300 -o "$tarball_path" "$download_url"; then
+            asset_base="$candidate"
+            checksum_url="${UPDATE_BASE_URL}/v${version}/${tarball_name}.sha256"
+            break
+        fi
+
+        rm -f "$tarball_path"
+    done
+
+    if [[ -z "$asset_base" ]]; then
         log_error "Download failed!"
         rm -rf "$temp_dir"
         return 1
@@ -1039,13 +1054,20 @@ update_download_and_verify() {
         return 1
     fi
 
-    if [[ ! -f "${temp_dir}/${UPDATE_BINARY_NAME}" ]]; then
+    local extracted_binary=""
+    if [[ -f "${temp_dir}/${UPDATE_BINARY_NAME}" ]]; then
+        extracted_binary="${temp_dir}/${UPDATE_BINARY_NAME}"
+    elif [[ -f "${temp_dir}/agent_forward" ]]; then
+        extracted_binary="${temp_dir}/agent_forward"
+    fi
+
+    if [[ -z "$extracted_binary" ]]; then
         log_error "Binary '${UPDATE_BINARY_NAME}' not found in tarball!"
         rm -rf "$temp_dir"
         return 1
     fi
 
-    mv "${temp_dir}/${UPDATE_BINARY_NAME}" "$output_path"
+    mv "$extracted_binary" "$output_path"
     chmod 755 "$output_path"
 
     rm -rf "$temp_dir"
