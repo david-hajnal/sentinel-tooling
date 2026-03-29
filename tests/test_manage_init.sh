@@ -178,6 +178,17 @@ setup_scenario() {
         "${SCENARIO_DIR}/systemd-state/active" \
         "$(dirname "${AGENT_BIN}")"
 
+    mkdir -p "${CONFIG_DIR}"
+    cat > "${SERVER_CONFIG_JSON}" <<'EOF'
+{
+  "server": {
+    "base_url": "https://admin.example.test:8443",
+    "bearer_token": "token-123",
+    "enabled": true
+  }
+}
+EOF
+
     cat > "${AGENT_BIN}" <<'EOF'
 #!/usr/bin/env bash
 exit 0

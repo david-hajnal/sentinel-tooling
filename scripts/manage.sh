@@ -919,11 +919,17 @@ PY
     if [[ -n "$server_base_url" || -n "$bearer_token" ]]; then
         update_server_json "$server_base_url" "$bearer_token"
         log_info "Server config updated: ${SERVER_CONFIG_JSON}"
-    else
-        log_warn "Server base URL or bearer token not set; server.json unchanged."
     fi
 
-    pull_remote_config "$server_base_url" "$bearer_token"
+    local effective_base_url effective_token
+    effective_base_url=$(json_get_file "$SERVER_CONFIG_JSON" "server.base_url")
+    effective_token=$(json_get_file "$SERVER_CONFIG_JSON" "server.bearer_token")
+
+    if [[ -z "$effective_base_url" || -z "$effective_token" ]]; then
+        die "Server base URL and bearer token are required. Update ${SERVER_CONFIG_JSON} and rerun init."
+    fi
+
+    pull_remote_config "$effective_base_url" "$effective_token"
     reconcile_service_state
 
     log_info "Init complete. Start the agent with: sudo sentinel-manage start"
