@@ -47,6 +47,8 @@ install_manage() {
 install_manage
 
 if [[ -x "$DEST" ]]; then
+    log "Installing sentinel-agent..."
+    "$DEST" update latest
     log "Starting sentinel-manage init..."
     "$DEST" init
 else

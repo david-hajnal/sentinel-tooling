@@ -1193,10 +1193,6 @@ cmd_update() {
     update_ensure_config_json
     update_install_manage_script
 
-    if [[ ! -f "${UPDATE_INSTALL_DIR}/${UPDATE_BINARY_NAME}" ]]; then
-        die "Service not installed. Install the binary + systemd unit first."
-    fi
-
     local current_version
     current_version=$(update_get_installed_version)
     log_info "Current version: $current_version"
