@@ -71,9 +71,6 @@ shift || true
 case "$cmd" in
     cat)
         unit="$(normalize_unit "${1:-}")"
-        if [[ "$unit" == "sentinel_rtp_cam" ]]; then
-            exit 0
-        fi
         [[ -f "${TEST_SYSTEMD_UNIT_DIR}/${unit}.service" ]]
         ;;
     is-enabled)
@@ -119,7 +116,7 @@ MANAGE_LIB="${TMP_DIR}/manage-lib.sh"
 sed '/^# Main command dispatcher/,$d' "${MANAGE}" > "${MANAGE_LIB}"
 # shellcheck disable=SC1090
 source "${MANAGE_LIB}"
-: "${SERVICE_NAME_FORWARD:?failed to load manage helpers}"
+: "${SERVICE_NAME:?failed to load manage helpers}"
 
 check_root() {
     :
@@ -135,8 +132,10 @@ setup_scenario() {
     CAMERA_CONFIG_JSON="${CONFIG_DIR}/camera.json"
     VERSION_FILE="${CONFIG_DIR}/firmware-version"
     CLIPS_DIR="${SCENARIO_DIR}/var/lib/sentinel_rtp_cam/clips"
-    FORWARD_BIN="${SCENARIO_DIR}/usr/local/bin/${SERVICE_NAME_FORWARD}"
-    FORWARD_SERVICE_FILE="${SCENARIO_DIR}/etc/systemd/system/${SERVICE_NAME_FORWARD}.service"
+    AGENT_BIN="${SCENARIO_DIR}/usr/local/bin/${SERVICE_NAME}"
+    AGENT_SERVICE_FILE="${SCENARIO_DIR}/etc/systemd/system/${SERVICE_NAME}.service"
+    INSTALL_BIN_DIR="$(dirname "${AGENT_BIN}")"
+    SYSTEMD_UNIT_DIR="$(dirname "${AGENT_SERVICE_FILE}")"
     TLS_DIR="${CONFIG_DIR}/tls"
     TLS_CA_CERT="${CONFIG_DIR}/ca.crt"
     TLS_SERVER_CERT="${CONFIG_DIR}/server.crt"
@@ -147,13 +146,25 @@ setup_scenario() {
         "${SCENARIO_DIR}/etc/systemd/system" \
         "${SCENARIO_DIR}/systemd-state/enabled" \
         "${SCENARIO_DIR}/systemd-state/active" \
-        "$(dirname "${FORWARD_BIN}")"
+        "$(dirname "${AGENT_BIN}")"
 
-    cat > "${FORWARD_BIN}" <<'EOF'
+    cat > "${AGENT_BIN}" <<'EOF'
 #!/usr/bin/env bash
 exit 0
 EOF
-    chmod +x "${FORWARD_BIN}"
+    chmod +x "${AGENT_BIN}"
+
+    cat > "${SCENARIO_DIR}/etc/systemd/system/sentinel_rtp_cam.service" <<'EOF'
+[Unit]
+Description=Legacy service
+EOF
+    cat > "${SCENARIO_DIR}/etc/systemd/system/sentinel_rtp_cam_forward.service" <<'EOF'
+[Unit]
+Description=Legacy forward service
+EOF
+    touch "${SCENARIO_DIR}/usr/local/bin/sentinel_rtp_cam"
+    touch "${SCENARIO_DIR}/usr/local/bin/sentinel_rtp_cam_forward"
+    touch "${SCENARIO_DIR}/usr/local/bin/agent_forward"
 
     SYSTEMCTL_LOG="${SCENARIO_DIR}/systemctl.log"
     : > "${SYSTEMCTL_LOG}"
@@ -174,34 +185,39 @@ run_init() {
 }
 
 setup_scenario "legacy-active"
-touch "${TEST_SYSTEMD_STATE_DIR}/enabled/${SERVICE_NAME_LEGACY}"
-touch "${TEST_SYSTEMD_STATE_DIR}/active/${SERVICE_NAME_LEGACY}"
+touch "${TEST_SYSTEMD_STATE_DIR}/enabled/sentinel_rtp_cam"
+touch "${TEST_SYSTEMD_STATE_DIR}/active/sentinel_rtp_cam"
 
 run_init
 
-assert_exists "${FORWARD_SERVICE_FILE}" "init should create forward service"
-assert_contains "${SYSTEMCTL_OUTPUT}" "daemon-reload" "forward service creation should reload systemd"
-assert_contains "${SYSTEMCTL_OUTPUT}" "stop ${SERVICE_NAME_LEGACY}" "init should stop the legacy service"
-assert_contains "${SYSTEMCTL_OUTPUT}" "disable ${SERVICE_NAME_LEGACY}" "init should disable the legacy service"
-assert_contains "${SYSTEMCTL_OUTPUT}" "enable ${SERVICE_NAME_FORWARD}" "init should enable the forward service"
-assert_contains "${SYSTEMCTL_OUTPUT}" "start ${SERVICE_NAME_FORWARD}" "init should start the forward service when the legacy service was running"
-assert_exists "${TEST_SYSTEMD_STATE_DIR}/enabled/${SERVICE_NAME_FORWARD}" "forward service should remain enabled"
-assert_exists "${TEST_SYSTEMD_STATE_DIR}/active/${SERVICE_NAME_FORWARD}" "forward service should be active after migration"
-assert_not_exists "${TEST_SYSTEMD_STATE_DIR}/enabled/${SERVICE_NAME_LEGACY}" "legacy service should no longer be enabled"
-assert_not_exists "${TEST_SYSTEMD_STATE_DIR}/active/${SERVICE_NAME_LEGACY}" "legacy service should no longer be active"
+assert_exists "${AGENT_SERVICE_FILE}" "init should create agent service"
+assert_contains "${SYSTEMCTL_OUTPUT}" "daemon-reload" "agent service creation should reload systemd"
+assert_contains "${SYSTEMCTL_OUTPUT}" "stop sentinel_rtp_cam" "init should stop the legacy service"
+assert_contains "${SYSTEMCTL_OUTPUT}" "disable sentinel_rtp_cam" "init should disable the legacy service"
+assert_contains "${SYSTEMCTL_OUTPUT}" "enable ${SERVICE_NAME}" "init should enable the agent service"
+assert_contains "${SYSTEMCTL_OUTPUT}" "start ${SERVICE_NAME}" "init should start the agent service when the legacy service was running"
+assert_exists "${TEST_SYSTEMD_STATE_DIR}/enabled/${SERVICE_NAME}" "agent service should remain enabled"
+assert_exists "${TEST_SYSTEMD_STATE_DIR}/active/${SERVICE_NAME}" "agent service should be active after migration"
+assert_not_exists "${TEST_SYSTEMD_STATE_DIR}/enabled/sentinel_rtp_cam" "legacy service should no longer be enabled"
+assert_not_exists "${TEST_SYSTEMD_STATE_DIR}/active/sentinel_rtp_cam" "legacy service should no longer be active"
+assert_not_exists "${SCENARIO_DIR}/etc/systemd/system/sentinel_rtp_cam.service" "legacy service file should be removed"
+assert_not_exists "${SCENARIO_DIR}/etc/systemd/system/sentinel_rtp_cam_forward.service" "legacy forward service file should be removed"
+assert_not_exists "${SCENARIO_DIR}/usr/local/bin/sentinel_rtp_cam" "legacy binary should be removed"
+assert_not_exists "${SCENARIO_DIR}/usr/local/bin/sentinel_rtp_cam_forward" "legacy forward binary should be removed"
+assert_not_exists "${SCENARIO_DIR}/usr/local/bin/agent_forward" "legacy agent_forward binary should be removed"
 
 setup_scenario "legacy-stopped"
-touch "${TEST_SYSTEMD_STATE_DIR}/enabled/${SERVICE_NAME_LEGACY}"
+touch "${TEST_SYSTEMD_STATE_DIR}/enabled/sentinel_rtp_cam"
 
 run_init
 
-assert_exists "${FORWARD_SERVICE_FILE}" "init should create forward service when missing"
-assert_contains "${SYSTEMCTL_OUTPUT}" "disable ${SERVICE_NAME_LEGACY}" "init should disable the legacy service even when stopped"
-assert_contains "${SYSTEMCTL_OUTPUT}" "enable ${SERVICE_NAME_FORWARD}" "init should enable the forward service for the next boot"
-assert_not_contains "${SYSTEMCTL_OUTPUT}" "start ${SERVICE_NAME_FORWARD}" "init should not start the forward service on a stopped host"
-assert_not_contains "${SYSTEMCTL_OUTPUT}" "restart ${SERVICE_NAME_FORWARD}" "init should leave a stopped host stopped"
-assert_exists "${TEST_SYSTEMD_STATE_DIR}/enabled/${SERVICE_NAME_FORWARD}" "forward service should be enabled after init"
-assert_not_exists "${TEST_SYSTEMD_STATE_DIR}/active/${SERVICE_NAME_FORWARD}" "forward service should stay stopped when no agent was running"
-assert_not_exists "${TEST_SYSTEMD_STATE_DIR}/enabled/${SERVICE_NAME_LEGACY}" "legacy service should be disabled after init"
+assert_exists "${AGENT_SERVICE_FILE}" "init should create agent service when missing"
+assert_contains "${SYSTEMCTL_OUTPUT}" "disable sentinel_rtp_cam" "init should disable the legacy service even when stopped"
+assert_contains "${SYSTEMCTL_OUTPUT}" "enable ${SERVICE_NAME}" "init should enable the agent service for the next boot"
+assert_not_contains "${SYSTEMCTL_OUTPUT}" "start ${SERVICE_NAME}" "init should not start the agent service on a stopped host"
+assert_not_contains "${SYSTEMCTL_OUTPUT}" "restart ${SERVICE_NAME}" "init should leave a stopped host stopped"
+assert_exists "${TEST_SYSTEMD_STATE_DIR}/enabled/${SERVICE_NAME}" "agent service should be enabled after init"
+assert_not_exists "${TEST_SYSTEMD_STATE_DIR}/active/${SERVICE_NAME}" "agent service should stay stopped when no agent was running"
+assert_not_exists "${TEST_SYSTEMD_STATE_DIR}/enabled/sentinel_rtp_cam" "legacy service should be disabled after init"
 
 echo "Manage init checks passed."

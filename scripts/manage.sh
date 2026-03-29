@@ -1,18 +1,21 @@
 #!/bin/bash
-# Sentinel RTP Camera - Management Script
+# Sentinel Agent - Management Script
 # Quick access to common management commands
 
 set -e
 
-SERVICE_NAME_LEGACY="sentinel_rtp_cam"
-SERVICE_NAME_FORWARD="sentinel_rtp_cam_forward"
+SERVICE_NAME="sentinel-agent"
+LEGACY_SERVICE_NAMES=("sentinel_rtp_cam" "sentinel_rtp_cam_forward")
+LEGACY_BINARY_NAMES=("sentinel_rtp_cam" "sentinel_rtp_cam_forward" "agent_forward")
 CONFIG_DIR="/etc/sentinel_rtp_cam"
 SERVER_CONFIG_JSON="${CONFIG_DIR}/server.json"
 CAMERA_CONFIG_JSON="${CONFIG_DIR}/camera.json"
 VERSION_FILE="${CONFIG_DIR}/firmware-version"
 CLIPS_DIR="/var/lib/sentinel_rtp_cam/clips"
-FORWARD_BIN="/usr/local/bin/${SERVICE_NAME_FORWARD}"
-FORWARD_SERVICE_FILE="/etc/systemd/system/${SERVICE_NAME_FORWARD}.service"
+AGENT_BIN="/usr/local/bin/${SERVICE_NAME}"
+AGENT_SERVICE_FILE="/etc/systemd/system/${SERVICE_NAME}.service"
+INSTALL_BIN_DIR="$(dirname "${AGENT_BIN}")"
+SYSTEMD_UNIT_DIR="$(dirname "${AGENT_SERVICE_FILE}")"
 TLS_DIR="${CONFIG_DIR}/tls"
 TLS_CA_CERT="${CONFIG_DIR}/ca.crt"
 TLS_SERVER_CERT="${CONFIG_DIR}/server.crt"
@@ -38,7 +41,7 @@ show_usage() {
     echo "  clips        List clips in storage directory"
     echo "  restart      Restart the service"
     echo "  stop         Stop the service"
-    echo "  start        Start the service (defaults to forward mode)"
+    echo "  start        Start the service"
     echo "  status       Show service status"
     echo "  logs         Follow live logs"
     echo "  logs-recent  Show recent logs (last 50 lines)"
@@ -51,17 +54,14 @@ show_usage() {
     echo "  $0 init"
     echo "  $0 tls --src /tmp"
     echo "  $0 restart"
-    echo "  $0 start forward"
-    echo "  $0 start legacy"
     echo "  $0 logs"
     echo "  $0 update latest"
     echo "  $0 update latest --start"
     echo "  $0 update 0.6.2 --dry-run"
     echo ""
-    echo "Mode selection:"
-    echo "  - If no mode is passed, the script defaults to forward mode."
-    echo "  - Set forward_agent.mode in $CAMERA_CONFIG_JSON to pin the mode."
-    echo "  - If forward service is missing but ${FORWARD_BIN} exists, the script will create it."
+    echo "Service model:"
+    echo "  - The managed agent service is ${SERVICE_NAME}.service."
+    echo "  - Legacy services are stopped, disabled, and removed during init/update."
 }
 
 check_root() {
@@ -86,22 +86,47 @@ systemd_service_active() {
     systemctl is-active --quiet "${service}.service"
 }
 
-forward_binary_exists() {
-    [[ -x "$FORWARD_BIN" ]]
+agent_binary_exists() {
+    [[ -x "$AGENT_BIN" ]]
 }
 
-ensure_forward_service() {
-    if systemd_service_exists "$SERVICE_NAME_FORWARD"; then
+remove_legacy_artifacts() {
+    local service
+    for service in "${LEGACY_SERVICE_NAMES[@]}"; do
+        if systemd_service_active "$service"; then
+            log_info "Stopping legacy service: ${service}"
+            systemctl stop "$service" || true
+        fi
+        if systemd_service_enabled "$service"; then
+            log_info "Disabling legacy service: ${service}"
+            systemctl disable "$service" || true
+        fi
+        rm -f "${SYSTEMD_UNIT_DIR}/${service}.service"
+    done
+
+    local binary
+    for binary in "${LEGACY_BINARY_NAMES[@]}"; do
+        rm -f \
+            "${INSTALL_BIN_DIR}/${binary}" \
+            "${INSTALL_BIN_DIR}/${binary}.prev" \
+            "${INSTALL_BIN_DIR}/${binary}.new"
+    done
+
+    systemctl daemon-reload
+}
+
+ensure_agent_service() {
+    if systemd_service_exists "$SERVICE_NAME"; then
         return 0
     fi
-    if ! forward_binary_exists; then
+    if ! agent_binary_exists; then
         return 1
     fi
 
-    echo -e "${YELLOW}Forward service not installed; creating ${SERVICE_NAME_FORWARD}.service${NC}"
-    cat > "$FORWARD_SERVICE_FILE" <<EOF
+    echo -e "${YELLOW}Agent service not installed; creating ${SERVICE_NAME}.service${NC}"
+    cat > "$AGENT_SERVICE_FILE" <<EOF
 [Unit]
-Description=Sentinel RTP Camera Agent (forward)
+Description=Sentinel Agent
 After=network-online.target
 Wants=network-online.target
 
@@ -131,7 +156,7 @@ LimitNOFILE=65536
 Environment=SERVER_CONFIG_JSON=/etc/sentinel_rtp_cam/server.json
 Environment=CAMERA_CONFIG_JSON=/etc/sentinel_rtp_cam/camera.json
 # Execution
-ExecStart=$FORWARD_BIN
+ExecStart=$AGENT_BIN
 
 # Restart policy
 Restart=on-failure
@@ -142,12 +167,12 @@ StartLimitBurst=5
 # Logging
 StandardOutput=journal
 StandardError=journal
-SyslogIdentifier=$SERVICE_NAME_FORWARD
+SyslogIdentifier=$SERVICE_NAME
 
 [Install]
 WantedBy=multi-user.target
 EOF
-    chmod 644 "$FORWARD_SERVICE_FILE"
+    chmod 644 "$AGENT_SERVICE_FILE"
     systemctl daemon-reload
     return 0
 }
@@ -162,56 +187,39 @@ start_or_restart_service() {
 }
 
 reconcile_service_state() {
-    local mode="${1:-}"
-    local legacy_active=0
-    local forward_active=0
-    local desired_service=""
-    local desired_mode=""
-    local inactive_service=""
+    local was_running=0
 
-    if systemd_service_active "$SERVICE_NAME_LEGACY"; then
-        legacy_active=1
+    if systemd_service_active "$SERVICE_NAME"; then
+        was_running=1
     fi
-    if systemd_service_active "$SERVICE_NAME_FORWARD"; then
-        forward_active=1
+    local service
+    for service in "${LEGACY_SERVICE_NAMES[@]}"; do
+        if systemd_service_active "$service"; then
+            was_running=1
+        fi
+    done
+
+    remove_legacy_artifacts
+
+    if ! systemd_service_exists "$SERVICE_NAME"; then
+        ensure_agent_service || true
     fi
 
-    resolve_service "$mode"
-    desired_service="$ACTIVE_SERVICE"
-    desired_mode="$ACTIVE_MODE"
-
-    if ! systemd_service_exists "$desired_service"; then
-        log_warn "Desired ${desired_mode} service (${desired_service}) is not installed; leaving service state unchanged."
+    if ! systemd_service_exists "$SERVICE_NAME"; then
+        log_warn "Desired service (${SERVICE_NAME}) is not installed; leaving service state unchanged."
         return 0
     fi
 
-    if [[ "$desired_service" == "$SERVICE_NAME_FORWARD" ]]; then
-        inactive_service="$SERVICE_NAME_LEGACY"
+    if ! systemd_service_enabled "$SERVICE_NAME"; then
+        log_info "Enabling service: ${SERVICE_NAME}"
+        systemctl enable "$SERVICE_NAME"
+    fi
+
+    if (( was_running )); then
+        log_info "Applying config with ${SERVICE_NAME}"
+        start_or_restart_service "$SERVICE_NAME"
     else
-        inactive_service="$SERVICE_NAME_FORWARD"
-    fi
-
-    if systemd_service_exists "$inactive_service"; then
-        if systemd_service_active "$inactive_service"; then
-            log_info "Stopping inactive service: ${inactive_service}"
-            systemctl stop "$inactive_service"
-        fi
-        if systemd_service_enabled "$inactive_service"; then
-            log_info "Disabling inactive service: ${inactive_service}"
-            systemctl disable "$inactive_service"
-        fi
-    fi
-
-    if ! systemd_service_enabled "$desired_service"; then
-        log_info "Enabling ${desired_mode} service: ${desired_service}"
-        systemctl enable "$desired_service"
-    fi
-
-    if (( legacy_active || forward_active )); then
-        log_info "Applying config with ${desired_service} (${desired_mode})"
-        start_or_restart_service "$desired_service"
-    else
-        log_info "Service mode set to ${desired_mode}; leaving the agent stopped."
+        log_info "Service configured; leaving the agent stopped."
     fi
 }
 
@@ -275,49 +283,11 @@ json_get() {
     json_get_file "$CAMERA_CONFIG_JSON" "$key"
 }
 
-resolve_mode() {
-    local mode="${1:-}"
-    if [[ -z "$mode" && -f "$CAMERA_CONFIG_JSON" ]]; then
-        mode=$(json_get "forward_agent.mode")
-        case "$mode" in
-            forward|legacy) ;;
-            *) mode="" ;;
-        esac
-        if [[ -z "$mode" ]]; then
-            if [[ -n "$(json_get "forward_agent.server_addr")" ]]; then
-                mode="forward"
-            fi
-        fi
-    fi
-    if [[ -z "$mode" ]]; then
-        mode="forward"
-    fi
-    echo "$mode"
-}
-
 resolve_service() {
-    local mode
-    mode=$(resolve_mode "${1:-}")
-
-    if [[ "$mode" == "forward" ]]; then
-        ACTIVE_SERVICE="$SERVICE_NAME_FORWARD"
-        ACTIVE_MODE="forward"
-        if ! systemd_service_exists "$ACTIVE_SERVICE"; then
-            ensure_forward_service || true
-        fi
-        if ! systemd_service_exists "$ACTIVE_SERVICE"; then
-            echo -e "${YELLOW}Forward service not installed; falling back to legacy (${SERVICE_NAME_LEGACY})${NC}"
-            ACTIVE_SERVICE="$SERVICE_NAME_LEGACY"
-            ACTIVE_MODE="legacy"
-        fi
-    else
-        ACTIVE_SERVICE="$SERVICE_NAME_LEGACY"
-        ACTIVE_MODE="legacy"
-        if ! systemd_service_exists "$ACTIVE_SERVICE" && systemd_service_exists "$SERVICE_NAME_FORWARD"; then
-            echo -e "${YELLOW}Legacy service not installed; using forward (${SERVICE_NAME_FORWARD})${NC}"
-            ACTIVE_SERVICE="$SERVICE_NAME_FORWARD"
-            ACTIVE_MODE="forward"
-        fi
+    ACTIVE_SERVICE="$SERVICE_NAME"
+    ACTIVE_MODE="agent"
+    if ! systemd_service_exists "$ACTIVE_SERVICE"; then
+        ensure_agent_service || true
     fi
 }
 
@@ -960,7 +930,6 @@ update_download_and_verify() {
     local arch="$1"
     local version="$2"
     local output_path="$3"
-    local output_forward_path="$4"
 
     version="${version#v}"
 
@@ -1030,13 +999,6 @@ update_download_and_verify() {
     mv "${temp_dir}/${UPDATE_BINARY_NAME}" "$output_path"
     chmod 755 "$output_path"
 
-    if [[ -f "${temp_dir}/${UPDATE_FORWARD_BINARY_NAME}" ]]; then
-        mv "${temp_dir}/${UPDATE_FORWARD_BINARY_NAME}" "$output_forward_path"
-        chmod 755 "$output_forward_path"
-    else
-        log_warn "Forward binary '${UPDATE_FORWARD_BINARY_NAME}' not found in tarball; skipping"
-    fi
-
     rm -rf "$temp_dir"
     return 0
 }
@@ -1091,12 +1053,6 @@ update_restart_service() {
         journalctl -u "$UPDATE_SERVICE_NAME" -n 20 --no-pager
         return 1
     fi
-
-    if systemctl list-unit-files --type=service | grep -q "^${UPDATE_FORWARD_SERVICE_NAME}\\.service"; then
-        if ! systemctl restart "$UPDATE_FORWARD_SERVICE_NAME"; then
-            log_warn "Failed to restart $UPDATE_FORWARD_SERVICE_NAME"
-        fi
-    fi
 }
 
 update_ensure_config_json() {
@@ -1147,14 +1103,12 @@ update_install_manage_script() {
 cmd_update() {
     check_root
 
-    UPDATE_BINARY_NAME="sentinel_rtp_cam"
-    UPDATE_FORWARD_BINARY_NAME="sentinel_rtp_cam_forward"
+    UPDATE_BINARY_NAME="sentinel-agent"
     UPDATE_INSTALL_DIR="/usr/local/bin"
-    UPDATE_CONFIG_DIR="/etc/${UPDATE_BINARY_NAME}"
+    UPDATE_CONFIG_DIR="${CONFIG_DIR}"
     UPDATE_SERVER_JSON="${UPDATE_CONFIG_DIR}/server.json"
     UPDATE_CAMERA_JSON="${UPDATE_CONFIG_DIR}/camera.json"
     UPDATE_SERVICE_NAME="${UPDATE_BINARY_NAME}"
-    UPDATE_FORWARD_SERVICE_NAME="${UPDATE_FORWARD_BINARY_NAME}"
     UPDATE_REPO="${SENTINEL_REPO:-david-hajnal/sentinel-video-receiver}"
     UPDATE_BASE_URL="${SENTINEL_BASE_URL:-https://github.com/${UPDATE_REPO}/releases/download}"
     UPDATE_VERSION="${SENTINEL_VERSION:-latest}"
@@ -1181,7 +1135,7 @@ cmd_update() {
         idx=$((idx + 1))
     done
 
-    log_info "Starting sentinel_rtp_cam update..."
+    log_info "Starting sentinel-agent update..."
     log_info "Target version: $UPDATE_VERSION"
     log_info "Server config JSON: $UPDATE_SERVER_JSON"
     log_info "Camera config JSON: $UPDATE_CAMERA_JSON"
@@ -1208,29 +1162,22 @@ cmd_update() {
     log_info "Architecture: $arch"
 
     local new_binary="${UPDATE_INSTALL_DIR}/${UPDATE_BINARY_NAME}.new"
-    local new_forward_binary="${UPDATE_INSTALL_DIR}/${UPDATE_FORWARD_BINARY_NAME}.new"
-
     if [[ $UPDATE_DRY_RUN -eq 1 ]]; then
         log_dry "Would download version $UPDATE_VERSION for $arch"
         log_dry "Would install to: $new_binary"
-        log_dry "Would install to: $new_forward_binary"
         return
     fi
 
-    if ! update_download_and_verify "$arch" "$UPDATE_VERSION" "$new_binary" "$new_forward_binary"; then
+    if ! update_download_and_verify "$arch" "$UPDATE_VERSION" "$new_binary"; then
         die "Failed to download and verify new binary"
     fi
 
+    remove_legacy_artifacts
     update_create_backup_binary "$UPDATE_BINARY_NAME"
-    if [[ -f "${UPDATE_INSTALL_DIR}/${UPDATE_FORWARD_BINARY_NAME}" ]]; then
-        update_create_backup_binary "$UPDATE_FORWARD_BINARY_NAME"
-    fi
 
     update_install_new_binary_to "$new_binary" "${UPDATE_INSTALL_DIR}/${UPDATE_BINARY_NAME}"
-    if [[ -f "$new_forward_binary" ]]; then
-        update_install_new_binary_to "$new_forward_binary" "${UPDATE_INSTALL_DIR}/${UPDATE_FORWARD_BINARY_NAME}"
-    fi
     update_write_installed_version "$UPDATE_RESOLVED_VERSION"
+    ensure_agent_service
 
     if [[ $UPDATE_START_AFTER -eq 1 ]]; then
         update_restart_service

@@ -26,6 +26,7 @@ Examples:
 
 Notes:
   - This command is unprivileged; a root-owned systemd service performs the update.
+  - --start schedules a delayed restart after the update result is written.
   - Rollback is not currently implemented by sentinel-tooling.
 EOF
 }

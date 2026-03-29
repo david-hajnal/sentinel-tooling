@@ -7,6 +7,7 @@ RESULT_DIR="${STATE_DIR}/results"
 LOCK_FILE="${STATE_DIR}/dispatch.lock"
 VERSION_FILE="${SENTINEL_FIRMWARE_VERSION_FILE:-/etc/sentinel_rtp_cam/firmware-version}"
 MANAGE_CMD="${SENTINEL_MANAGE_CMD:-/usr/local/bin/sentinel-manage}"
+RESTART_DELAY_SECONDS="${SENTINEL_FIRMWARE_RESTART_DELAY_SECONDS:-5}"
 
 normalize_version() {
     local version="$1"
@@ -39,6 +40,26 @@ write_result() {
 
     mv -f "$tmp_result" "$result_path"
     chmod 664 "$result_path"
+}
+
+schedule_restart() {
+    local request_name="$1"
+    local log_path="$2"
+    local restart_unit="sentinel-firmware-update-restart-${request_name}"
+
+    if ! command -v systemd-run >/dev/null 2>&1; then
+        echo "systemd-run is not available; cannot schedule post-update restart" >> "$log_path"
+        return 1
+    fi
+
+    if ! systemd-run \
+        --quiet \
+        --collect \
+        --unit "$restart_unit" \
+        --on-active="${RESTART_DELAY_SECONDS}s" \
+        "$MANAGE_CMD" restart >> "$log_path" 2>&1; then
+        return 1
+    fi
 }
 
 parse_request() {
@@ -111,9 +132,6 @@ process_request() {
     fi
 
     local args=("update" "$normalized_version")
-    if [[ "$REQUEST_START" == "1" ]]; then
-        args+=("--start")
-    fi
 
     if "$MANAGE_CMD" "${args[@]}" > "$log_path" 2>&1; then
         local installed_version=""
@@ -121,9 +139,21 @@ process_request() {
             installed_version="$(tr -d '[:space:]' < "$VERSION_FILE")"
         fi
 
+        if [[ "$REQUEST_START" == "1" ]]; then
+            if ! schedule_restart "$request_name" "$log_path"; then
+                write_result "$result_path" 1 "Firmware update completed but restart could not be scheduled. See $log_path." "$log_path"
+                rm -f "$request_path"
+                return
+            fi
+        fi
+
         local message="Firmware update completed."
         if [[ -n "$installed_version" ]]; then
             message="Firmware update completed: ${installed_version}."
+        fi
+
+        if [[ "$REQUEST_START" == "1" ]]; then
+            message="${message} Restart scheduled."
         fi
 
         write_result "$result_path" 0 "$message" "$log_path"

@@ -90,4 +90,6 @@ Successful updates still run through `sentinel-manage update ...` as root and wr
 
 The agent-side wrapper is unprivileged. It writes a request into `/var/lib/sentinel_rtp_cam/firmware-updater/requests`, and the root-owned `sentinel-firmware-update-dispatch.path` + `sentinel-firmware-update-dispatch.service` pair performs the actual update.
 
+For `--start` requests, the dispatcher now writes the success result first and then schedules a delayed restart via `systemd-run`, so the agent can report the firmware job as completed before its own service is restarted.
+
 Rollback is not currently implemented by `sentinel-tooling`. `sentinel-firmware-update --rollback` exits nonzero with a clear error instead of pretending success.

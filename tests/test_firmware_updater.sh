@@ -79,6 +79,7 @@ INSTALL_BIN_DIR="${INSTALL_ROOT}/usr/local/bin"
 SYSTEMD_DIR="${INSTALL_ROOT}/etc/systemd/system"
 INSTALL_STATE_DIR="${INSTALL_ROOT}/var/lib/sentinel_rtp_cam/firmware-updater"
 SYSTEMCTL_LOG="${TMP_DIR}/systemctl.log"
+SYSTEMD_RUN_LOG="${TMP_DIR}/systemd-run.log"
 
 mkdir -p "${REQUEST_DIR}" "${RESULT_DIR}" "${STUB_BIN_DIR}"
 
@@ -114,10 +115,18 @@ printf '%s\n' "${target_version}" > "${TEST_FIRMWARE_VERSION_FILE}"
 EOF
 chmod +x "${STUB_BIN_DIR}/sentinel-manage"
 
+cat > "${STUB_BIN_DIR}/systemd-run" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$*" >> "${TEST_SYSTEMD_RUN_LOG}"
+EOF
+chmod +x "${STUB_BIN_DIR}/systemd-run"
+
 export PATH="${STUB_BIN_DIR}:$PATH"
 export SENTINEL_FIRMWARE_UPDATER_STATE_DIR="${STATE_DIR}"
 export SENTINEL_FIRMWARE_VERSION_FILE="${VERSION_FILE}"
 export SENTINEL_MANAGE_CMD="${STUB_BIN_DIR}/sentinel-manage"
+export TEST_SYSTEMD_RUN_LOG="${SYSTEMD_RUN_LOG}"
 export TEST_SENTINEL_MANAGE_LOG="${MANAGE_LOG}"
 export TEST_FIRMWARE_VERSION_FILE="${VERSION_FILE}"
 export TEST_LATEST_RESOLVED_VERSION="9.9.9"
@@ -130,7 +139,9 @@ assert_contains "${RUN_OUTPUT}" "Firmware update completed: 1.1.3." "success mes
 
 run_wrapper_with_dispatch "${TMP_DIR}/run-start.log" 1.1.3 --start
 assert_eq "${RUN_STATUS}" "0" "update with start status"
-assert_eq "$(tr -d '\n' < "${MANAGE_LOG}")" "update 1.1.3 --start" "version mapping with start"
+assert_eq "$(tr -d '\n' < "${MANAGE_LOG}")" "update 1.1.3" "version mapping with deferred restart"
+assert_contains "$(cat "${SYSTEMD_RUN_LOG}")" "restart" "restart scheduling"
+assert_contains "${RUN_OUTPUT}" "Restart scheduled." "restart scheduling message"
 
 run_wrapper_with_dispatch "${TMP_DIR}/run-latest.log" latest
 assert_eq "${RUN_STATUS}" "0" "latest update status"
