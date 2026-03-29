@@ -10,6 +10,44 @@
 - `scripts/sentinel-firmware-update-dispatch` — root-owned firmware update dispatcher for the systemd service
 - `scripts/install-firmware-updater.sh` — single-file installer for managed firmware update support
 
+## Sentinel Production MCP
+
+The repo also contains a read-only production MCP service under `mcp/`. It is designed to run on a production host, bind only to `127.0.0.1:8787`, and be exposed only through `cloudflared` plus Cloudflare Access.
+
+Supported read operations:
+
+- Kubernetes pod listing, pod logs, pod descriptions, and namespace events for `sentinel`
+- Fixed Postgres inspection queries executed via `kubectl exec` into `postgres-0`
+
+### MCP development
+
+```bash
+cd mcp
+npm install
+npm test
+npm run build
+```
+
+Run locally:
+
+```bash
+cd mcp
+npm run dev
+```
+
+The MCP endpoint is `http://127.0.0.1:8787/mcp`.
+
+### MCP deployment
+
+1. Install Node 20+, `kubectl`, and `cloudflared` on the production host.
+2. Copy the `mcp/` directory to the target host and run `npm install && npm run build` inside it.
+3. Create a dedicated non-root service user and give it read-only Kubernetes access for namespace `sentinel`, including `pods/log` and the ability to `exec` into `postgres-0`.
+4. Substitute the placeholders in `systemd/sentinel-production-mcp.service.in` and install the rendered unit.
+5. Configure `cloudflared` using `cloudflared/sentinel-production-mcp.yml.example`.
+6. In Cloudflare Zero Trust, protect the MCP hostname with an Access self-hosted application and a service token policy. MCP clients should send `CF-Access-Client-Id` and `CF-Access-Client-Secret`.
+
+The service intentionally does not expose arbitrary shell commands, arbitrary `kubectl`, file reads, or arbitrary SQL.
+
 ## Quick run (no install)
 
 ```bash

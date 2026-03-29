@@ -654,23 +654,63 @@ pull_remote_config() {
         return 0
     fi
 
-    if ! python3 - "$SERVER_CONFIG_JSON" "$CAMERA_CONFIG_JSON" < "$tmp" <<'PY'
+    local parse_log
+    parse_log=$(mktemp)
+    if ! python3 - "$SERVER_CONFIG_JSON" "$CAMERA_CONFIG_JSON" "$tmp" >"$parse_log" 2>&1 <<'PY'
 import json
 import sys
 
 server_path = sys.argv[1]
 camera_path = sys.argv[2]
+payload_path = sys.argv[3]
+
+def fail(message, preview_text=None):
+    sys.stderr.write(message + "\n")
+    if preview_text:
+        compact = " ".join(preview_text.split())
+        compact = compact[:200]
+        sys.stderr.write(f"Response preview: {compact}\n")
+    sys.exit(1)
 
 try:
-    payload = json.load(sys.stdin)
+    with open(payload_path, "r", encoding="utf-8") as fh:
+        raw_text = fh.read()
 except Exception:
-    sys.stderr.write("Invalid JSON payload\n")
-    sys.exit(1)
+    fail("Failed to read config payload")
 
-config = payload.get("config")
+try:
+    payload = json.loads(raw_text)
+except Exception:
+    fail("Invalid JSON payload", raw_text)
+
+if isinstance(payload, str):
+    try:
+        payload = json.loads(payload)
+    except Exception:
+        fail("String payload did not contain JSON", payload)
+
+config = None
+if isinstance(payload, dict):
+    nested = payload.get("config")
+    if isinstance(nested, dict):
+        config = nested
+    else:
+        # Accept raw config objects for compatibility with older or proxied responses.
+        config_keys = {
+            "cameras",
+            "server",
+            "udp_forward",
+            "onvif",
+            "storage",
+            "recording",
+            "motion",
+            "version",
+        }
+        if any(key in payload for key in config_keys):
+            config = payload
+
 if not isinstance(config, dict):
-    sys.stderr.write("Missing config payload\n")
-    sys.exit(1)
+    fail("Missing config payload", raw_text)
 
 def load(path):
     try:
@@ -709,10 +749,19 @@ with open(camera_path, "w", encoding="utf-8") as fh:
     json.dump(camera_value, fh, indent=2)
 PY
     then
+        local parse_output=""
+        parse_output=$(cat "$parse_log")
+        rm -f "$parse_log"
         rm -f "$tmp"
+        if [[ -n "$parse_output" ]]; then
+            while IFS= read -r line; do
+                [[ -n "$line" ]] && log_warn "$line"
+            done <<< "$parse_output"
+        fi
         log_warn "Failed to parse config payload from server."
         return 0
     fi
+    rm -f "$parse_log"
 
     rm -f "$tmp"
     chmod 600 "$SERVER_CONFIG_JSON" "$CAMERA_CONFIG_JSON"

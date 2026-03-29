@@ -112,6 +112,36 @@ esac
 EOF
 chmod +x "${FAKE_BIN_DIR}/systemctl"
 
+cat > "${FAKE_BIN_DIR}/curl" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+output_path=""
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        -o)
+            output_path="${2:-}"
+            shift 2
+            ;;
+        *)
+            shift
+            ;;
+    esac
+done
+
+if [[ "${TEST_CURL_EXIT_CODE:-0}" != "0" ]]; then
+    exit "${TEST_CURL_EXIT_CODE}"
+fi
+
+if [[ -z "${output_path}" ]]; then
+    echo "missing -o argument" >&2
+    exit 1
+fi
+
+cp "${TEST_CURL_RESPONSE_FILE}" "${output_path}"
+EOF
+chmod +x "${FAKE_BIN_DIR}/curl"
+
 MANAGE_LIB="${TMP_DIR}/manage-lib.sh"
 sed '/^# Main command dispatcher/,$d' "${MANAGE}" > "${MANAGE_LIB}"
 # shellcheck disable=SC1090
@@ -219,5 +249,74 @@ assert_not_contains "${SYSTEMCTL_OUTPUT}" "restart ${SERVICE_NAME}" "init should
 assert_exists "${TEST_SYSTEMD_STATE_DIR}/enabled/${SERVICE_NAME}" "agent service should be enabled after init"
 assert_not_exists "${TEST_SYSTEMD_STATE_DIR}/active/${SERVICE_NAME}" "agent service should stay stopped when no agent was running"
 assert_not_exists "${TEST_SYSTEMD_STATE_DIR}/enabled/sentinel_rtp_cam" "legacy service should be disabled after init"
+
+setup_scenario "config-pull-raw-payload"
+mkdir -p "${CONFIG_DIR}"
+cat > "${SERVER_CONFIG_JSON}" <<'EOF'
+{
+  "server": {
+    "base_url": "https://example.test:443",
+    "bearer_token": "device-token"
+  }
+}
+EOF
+cat > "${CAMERA_CONFIG_JSON}" <<'EOF'
+{
+  "existing": true
+}
+EOF
+RAW_CONFIG_RESPONSE="${SCENARIO_DIR}/config-response.json"
+cat > "${RAW_CONFIG_RESPONSE}" <<'EOF'
+{
+  "server": {
+    "bearer_token": "remote-token"
+  },
+  "cameras": [
+    {
+      "camera_id": "cam-1",
+      "user": "alice"
+    }
+  ]
+}
+EOF
+export TEST_CURL_RESPONSE_FILE="${RAW_CONFIG_RESPONSE}"
+export TEST_CURL_EXIT_CODE=0
+PULL_OUTPUT="$(pull_remote_config "https://example.test:443" "device-token" 2>&1 || true)"
+assert_contains "${PULL_OUTPUT}" "Pulled camera config from server." "raw config payload should be accepted"
+CAMERA_USER="$(python3 - "${CAMERA_CONFIG_JSON}" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], "r", encoding="utf-8") as fh:
+    data = json.load(fh)
+
+print(data["cameras"][0]["user"])
+PY
+)"
+assert_contains "${CAMERA_USER}" "alice" "raw payload should update camera config"
+
+setup_scenario "config-pull-invalid-json"
+mkdir -p "${CONFIG_DIR}"
+cat > "${SERVER_CONFIG_JSON}" <<'EOF'
+{
+  "server": {
+    "base_url": "https://example.test:443",
+    "bearer_token": "device-token"
+  }
+}
+EOF
+cat > "${CAMERA_CONFIG_JSON}" <<'EOF'
+{}
+EOF
+INVALID_CONFIG_RESPONSE="${SCENARIO_DIR}/config-response.txt"
+cat > "${INVALID_CONFIG_RESPONSE}" <<'EOF'
+<html><body>login required</body></html>
+EOF
+export TEST_CURL_RESPONSE_FILE="${INVALID_CONFIG_RESPONSE}"
+export TEST_CURL_EXIT_CODE=0
+INVALID_PULL_OUTPUT="$(pull_remote_config "https://example.test:443" "device-token" 2>&1 || true)"
+assert_contains "${INVALID_PULL_OUTPUT}" "Invalid JSON payload" "invalid payload should report parse failure"
+assert_contains "${INVALID_PULL_OUTPUT}" "Response preview: <html><body>login required</body></html>" "invalid payload should include response preview"
+assert_contains "${INVALID_PULL_OUTPUT}" "Failed to parse config payload from server." "invalid payload should preserve high-level warning"
 
 echo "Manage init checks passed."
