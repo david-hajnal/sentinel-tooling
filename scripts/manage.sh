@@ -11,6 +11,7 @@ CONFIG_DIR="/etc/sentinel_rtp_cam"
 SERVER_CONFIG_JSON="${CONFIG_DIR}/server.json"
 CAMERA_CONFIG_JSON="${CONFIG_DIR}/camera.json"
 VERSION_FILE="${CONFIG_DIR}/firmware-version"
+STATE_DIR="/var/lib/sentinel_rtp_cam"
 CLIPS_DIR="/var/lib/sentinel_rtp_cam/clips"
 AGENT_BIN="/usr/local/bin/${SERVICE_NAME}"
 AGENT_SERVICE_FILE="/etc/systemd/system/${SERVICE_NAME}.service"
@@ -90,6 +91,28 @@ agent_binary_exists() {
     [[ -x "$AGENT_BIN" ]]
 }
 
+ensure_service_user() {
+    if id sentinel >/dev/null 2>&1; then
+        return 0
+    fi
+
+    log_info "Creating system user: sentinel"
+    if command -v useradd >/dev/null 2>&1; then
+        useradd --system --home-dir "$STATE_DIR" --shell /usr/sbin/nologin sentinel
+    elif command -v adduser >/dev/null 2>&1; then
+        adduser --system --home "$STATE_DIR" --shell /usr/sbin/nologin --group sentinel
+    else
+        die "Neither useradd nor adduser is available; cannot create sentinel user."
+    fi
+}
+
+ensure_runtime_dirs() {
+    mkdir -p "$CONFIG_DIR" "$STATE_DIR" "$CLIPS_DIR"
+    chmod 755 "$CONFIG_DIR" "$STATE_DIR"
+    chmod 775 "$CLIPS_DIR"
+    chown -R sentinel:sentinel "$STATE_DIR"
+}
+
 remove_legacy_artifacts() {
     local service
     for service in "${LEGACY_SERVICE_NAMES[@]}"; do
@@ -112,10 +135,13 @@ remove_legacy_artifacts() {
             "${INSTALL_BIN_DIR}/${binary}.new"
     done
 
-    systemctl daemon-reload
+    systemctl daemon-reload || log_warn "systemctl daemon-reload failed during legacy cleanup"
 }
 
 ensure_agent_service() {
+    ensure_service_user
+    ensure_runtime_dirs
+
     if systemd_service_exists "$SERVICE_NAME"; then
         return 0
     fi
@@ -1246,6 +1272,8 @@ cmd_update() {
     fi
 
     remove_legacy_artifacts
+    ensure_service_user
+    ensure_runtime_dirs
     update_create_backup_binary "$UPDATE_BINARY_NAME"
 
     update_install_new_binary_to "$new_binary" "${UPDATE_INSTALL_DIR}/${UPDATE_BINARY_NAME}"

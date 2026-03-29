@@ -112,6 +112,20 @@ esac
 EOF
 chmod +x "${FAKE_BIN_DIR}/systemctl"
 
+cat > "${FAKE_BIN_DIR}/useradd" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+exit 0
+EOF
+chmod +x "${FAKE_BIN_DIR}/useradd"
+
+cat > "${FAKE_BIN_DIR}/curl" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+exit 22
+EOF
+chmod +x "${FAKE_BIN_DIR}/curl"
+
 cat > "${FAKE_BIN_DIR}/curl" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail

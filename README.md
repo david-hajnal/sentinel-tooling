@@ -2,13 +2,14 @@
 
 ## Scripts
 
-### Sentinel RTP Camera
+### Sentinel Agent
 
-- `scripts/manage.sh` — main CLI for managing `sentinel_rtp_cam` services and updates
+- `scripts/manage.sh` — main CLI for managing `sentinel-agent` service, config, and updates
 - `scripts/update.sh` — thin wrapper (`manage.sh update ...`)
 - `scripts/sentinel-firmware-update` — unprivileged agent-compatible firmware update request wrapper
 - `scripts/sentinel-firmware-update-dispatch` — root-owned firmware update dispatcher for the systemd service
 - `scripts/install-firmware-updater.sh` — single-file installer for managed firmware update support
+- `init.sh` — one-shot bootstrap installer for `sentinel-manage`, `sentinel-agent`, and firmware updater support
 
 ## Sentinel Production MCP
 
@@ -56,10 +57,32 @@ chmod +x /tmp/sentinel-manage.sh
 sudo /tmp/sentinel-manage.sh --help
 ```
 
-## One-line install
+## Bootstrap install
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/david-hajnal/sentinel-tooling/main/init.sh -o /tmp/sentinel-init.sh && sudo bash /tmp/sentinel-init.sh
+```
+
+What it does:
+
+- installs `/usr/local/bin/sentinel-manage`
+- installs the latest `sentinel-agent` binary
+- installs managed firmware updater support
+- removes legacy `sentinel_rtp_cam` / `sentinel_rtp_cam_forward` binaries and services during the update path
+- does not auto-run interactive registration
+
+After bootstrap, run:
+
+```bash
+sudo sentinel-manage init
+```
+
+If you want the bootstrap to start the service immediately after install:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/david-hajnal/sentinel-tooling/main/init.sh -o /tmp/sentinel-init.sh
+chmod +x /tmp/sentinel-init.sh
+sudo SENTINEL_START_AFTER_INSTALL=1 /tmp/sentinel-init.sh
 ```
 
 ## Managed firmware updater install
@@ -91,7 +114,7 @@ sentinel-manage --help
 ## Common commands
 
 ```bash
-# Initialize agent registration payload
+# Initialize agent registration payload and server config
 sudo sentinel-manage init
 
 # Edit camera/server config JSON
