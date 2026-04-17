@@ -1,5 +1,42 @@
 # sentinel-tooling
 
+## Installation
+
+### 1. Bootstrap the device
+
+This installs `/usr/local/bin/sentinel-manage`, the latest `sentinel-agent` binary, and managed firmware updater support.
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/david-hajnal/sentinel-tooling/main/init.sh -o /tmp/sentinel-init.sh
+sudo bash /tmp/sentinel-init.sh
+```
+
+If you want the bootstrap to start the service immediately after install:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/david-hajnal/sentinel-tooling/main/init.sh -o /tmp/sentinel-init.sh
+chmod +x /tmp/sentinel-init.sh
+sudo SENTINEL_START_AFTER_INSTALL=1 /tmp/sentinel-init.sh
+```
+
+### 2. Register the agent
+
+```bash
+sudo sentinel-manage init
+```
+
+### 3. Start the service
+
+```bash
+sudo sentinel-manage start
+```
+
+If you already have `sentinel-manage` installed and only want to refresh the agent binary:
+
+```bash
+sudo sentinel-manage update latest
+```
+
 ## Scripts
 
 ### Sentinel Agent
@@ -55,34 +92,6 @@ The service intentionally does not expose arbitrary shell commands, arbitrary `k
 curl -fsSL https://raw.githubusercontent.com/david-hajnal/sentinel-tooling/main/scripts/manage.sh -o /tmp/sentinel-manage.sh
 chmod +x /tmp/sentinel-manage.sh
 sudo /tmp/sentinel-manage.sh --help
-```
-
-## Bootstrap install
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/david-hajnal/sentinel-tooling/main/init.sh -o /tmp/sentinel-init.sh && sudo bash /tmp/sentinel-init.sh
-```
-
-What it does:
-
-- installs `/usr/local/bin/sentinel-manage`
-- installs the latest `sentinel-agent` binary
-- installs managed firmware updater support
-- removes legacy `sentinel_rtp_cam` / `sentinel_rtp_cam_forward` binaries and services during the update path
-- does not auto-run interactive registration
-
-After bootstrap, run:
-
-```bash
-sudo sentinel-manage init
-```
-
-If you want the bootstrap to start the service immediately after install:
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/david-hajnal/sentinel-tooling/main/init.sh -o /tmp/sentinel-init.sh
-chmod +x /tmp/sentinel-init.sh
-sudo SENTINEL_START_AFTER_INSTALL=1 /tmp/sentinel-init.sh
 ```
 
 ## Managed firmware updater install
