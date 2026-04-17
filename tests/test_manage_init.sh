@@ -29,6 +29,40 @@ assert_not_contains() {
     fi
 }
 
+assert_before() {
+    local log_file="$1"
+    local first="$2"
+    local second="$3"
+    local message="$4"
+    local first_line
+    local second_line
+
+    first_line="$(grep -nF "$first" "$log_file" | head -n1 | cut -d: -f1 || true)"
+    second_line="$(grep -nF "$second" "$log_file" | head -n1 | cut -d: -f1 || true)"
+
+    if [[ -z "$first_line" || -z "$second_line" || "$first_line" -ge "$second_line" ]]; then
+        fail "${message}: expected '${first}' before '${second}'"
+    fi
+}
+
+assert_mode() {
+    local path="$1"
+    local expected="$2"
+    local actual
+    actual="$(python3 - "$path" <<'PY'
+import os
+import stat
+import sys
+
+mode = stat.S_IMODE(os.stat(sys.argv[1]).st_mode)
+print(format(mode, "o"))
+PY
+)"
+    if [[ "$actual" != "$expected" ]]; then
+        fail "unexpected mode for ${path}: expected ${expected}, got ${actual}"
+    fi
+}
+
 assert_exists() {
     local path="$1"
     local message="$2"
@@ -57,7 +91,7 @@ cat > "${FAKE_BIN_DIR}/systemctl" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 
-printf '%s\n' "$*" >> "${TEST_SYSTEMCTL_LOG}"
+printf '%s\n' "$*" >> "${TEST_ACTION_LOG:-${TEST_SYSTEMCTL_LOG}}"
 
 normalize_unit() {
     local unit="${1:-}"
@@ -112,12 +146,32 @@ esac
 EOF
 chmod +x "${FAKE_BIN_DIR}/systemctl"
 
+cat > "${FAKE_BIN_DIR}/chown" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+printf 'chown %s\n' "$*" >> "${TEST_ACTION_LOG:-${TEST_SYSTEMCTL_LOG}}"
+EOF
+chmod +x "${FAKE_BIN_DIR}/chown"
+
 cat > "${FAKE_BIN_DIR}/useradd" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 exit 0
 EOF
 chmod +x "${FAKE_BIN_DIR}/useradd"
+
+cat > "${FAKE_BIN_DIR}/id" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ "${1:-}" == "sentinel" ]]; then
+    exit 0
+fi
+
+exec /usr/bin/id "$@"
+EOF
+chmod +x "${FAKE_BIN_DIR}/id"
 
 cat > "${FAKE_BIN_DIR}/curl" <<'EOF'
 #!/usr/bin/env bash
@@ -224,6 +278,7 @@ EOF
     SYSTEMCTL_LOG="${SCENARIO_DIR}/systemctl.log"
     : > "${SYSTEMCTL_LOG}"
     export TEST_SYSTEMCTL_LOG="${SYSTEMCTL_LOG}"
+    export TEST_ACTION_LOG="${SYSTEMCTL_LOG}"
     export TEST_SYSTEMD_UNIT_DIR="${SCENARIO_DIR}/etc/systemd/system"
     export TEST_SYSTEMD_STATE_DIR="${SCENARIO_DIR}/systemd-state"
     export PATH="${FAKE_BIN_DIR}:${ORIGINAL_PATH}"
@@ -231,13 +286,16 @@ EOF
 
 run_init() {
     local output_file="${SCENARIO_DIR}/init.log"
-    if ! printf '\n\n\n\n\n\n' | cmd_init >"${output_file}" 2>&1; then
+    local input="${INIT_INPUT:-$DEFAULT_INIT_INPUT}"
+    if ! printf '%s' "$input" | cmd_init >"${output_file}" 2>&1; then
         cat "${output_file}" >&2
         fail "cmd_init failed for ${SCENARIO_DIR}"
     fi
     INIT_OUTPUT="$(cat "${output_file}")"
     SYSTEMCTL_OUTPUT="$(cat "${SYSTEMCTL_LOG}")"
 }
+
+DEFAULT_INIT_INPUT=$'\n\n\n\n\n\n'
 
 setup_scenario "legacy-active"
 touch "${TEST_SYSTEMD_STATE_DIR}/enabled/sentinel_rtp_cam"
@@ -260,6 +318,10 @@ assert_not_exists "${SCENARIO_DIR}/etc/systemd/system/sentinel_rtp_cam_forward.s
 assert_not_exists "${SCENARIO_DIR}/usr/local/bin/sentinel_rtp_cam" "legacy binary should be removed"
 assert_not_exists "${SCENARIO_DIR}/usr/local/bin/sentinel_rtp_cam_forward" "legacy forward binary should be removed"
 assert_not_exists "${SCENARIO_DIR}/usr/local/bin/agent_forward" "legacy agent_forward binary should be removed"
+assert_contains "${SYSTEMCTL_OUTPUT}" "chown sentinel:sentinel ${SERVER_CONFIG_JSON}" "init should normalize server config ownership"
+assert_contains "${SYSTEMCTL_OUTPUT}" "chown sentinel:sentinel ${CAMERA_CONFIG_JSON}" "init should normalize camera config ownership"
+assert_mode "${SERVER_CONFIG_JSON}" "600"
+assert_mode "${CAMERA_CONFIG_JSON}" "600"
 
 setup_scenario "legacy-stopped"
 touch "${TEST_SYSTEMD_STATE_DIR}/enabled/sentinel_rtp_cam"
@@ -453,5 +515,19 @@ INVALID_PULL_OUTPUT="$(pull_remote_config "https://example.test:443" "device-tok
 assert_contains "${INVALID_PULL_OUTPUT}" "Invalid JSON payload" "invalid payload should report parse failure"
 assert_contains "${INVALID_PULL_OUTPUT}" "Response preview: <html><body>login required</body></html>" "invalid payload should include response preview"
 assert_contains "${INVALID_PULL_OUTPUT}" "Failed to parse config payload from server." "invalid payload should preserve high-level warning"
+
+setup_scenario "fresh-config-files-get-normalized"
+rm -f "${SERVER_CONFIG_JSON}" "${CAMERA_CONFIG_JSON}"
+export SENTINEL_SERVER_BASE_URL="https://sentinel.example:443"
+INIT_INPUT=$'\n\n\n\n\nfresh-token\n'
+
+run_init
+
+assert_exists "${SERVER_CONFIG_JSON}" "fresh init should create server config"
+assert_exists "${CAMERA_CONFIG_JSON}" "fresh init should create camera config"
+assert_contains "${SYSTEMCTL_OUTPUT}" "chown sentinel:sentinel ${SERVER_CONFIG_JSON}" "fresh init should normalize server config ownership"
+assert_contains "${SYSTEMCTL_OUTPUT}" "chown sentinel:sentinel ${CAMERA_CONFIG_JSON}" "fresh init should normalize camera config ownership"
+assert_mode "${SERVER_CONFIG_JSON}" "600"
+assert_mode "${CAMERA_CONFIG_JSON}" "600"
 
 echo "Manage init checks passed."

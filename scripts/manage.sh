@@ -113,6 +113,23 @@ ensure_runtime_dirs() {
     chown -R sentinel:sentinel "$STATE_DIR"
 }
 
+normalize_agent_json_ownership() {
+    local can_chown=0
+    local file
+
+    if id sentinel >/dev/null 2>&1; then
+        can_chown=1
+    fi
+
+    for file in "$@"; do
+        [[ -f "$file" ]] || continue
+        if (( can_chown )); then
+            chown sentinel:sentinel "$file"
+        fi
+        chmod 600 "$file"
+    done
+}
+
 remove_legacy_artifacts() {
     local service
     for service in "${LEGACY_SERVICE_NAMES[@]}"; do
@@ -205,6 +222,7 @@ EOF
 
 start_or_restart_service() {
     local service="$1"
+    normalize_agent_json_ownership "$SERVER_CONFIG_JSON" "$CAMERA_CONFIG_JSON"
     if systemd_service_active "$service"; then
         systemctl restart "$service"
     else
@@ -469,6 +487,7 @@ cmd_clips() {
 cmd_restart() {
     check_root
     resolve_service "${2:-}"
+    normalize_agent_json_ownership "$SERVER_CONFIG_JSON" "$CAMERA_CONFIG_JSON"
     echo -e "${YELLOW}Restarting $ACTIVE_SERVICE ($ACTIVE_MODE)...${NC}"
     systemctl restart "$ACTIVE_SERVICE"
     sleep 2
@@ -486,6 +505,7 @@ cmd_stop() {
 cmd_start() {
     check_root
     resolve_service "${2:-}"
+    normalize_agent_json_ownership "$SERVER_CONFIG_JSON" "$CAMERA_CONFIG_JSON"
     echo -e "${GREEN}Starting $ACTIVE_SERVICE ($ACTIVE_MODE)...${NC}"
     systemctl start "$ACTIVE_SERVICE"
     sleep 2
@@ -543,7 +563,7 @@ ensure_server_json() {
   }
 }
 EOF
-    chmod 600 "$SERVER_CONFIG_JSON"
+    normalize_agent_json_ownership "$SERVER_CONFIG_JSON"
 }
 
 ensure_camera_json() {
@@ -613,7 +633,7 @@ ensure_camera_json() {
   }
 }
 EOF
-    chmod 600 "$CAMERA_CONFIG_JSON"
+    normalize_agent_json_ownership "$CAMERA_CONFIG_JSON"
 }
 
 update_server_json() {
@@ -653,7 +673,7 @@ data["server"] = server
 with open(path, "w", encoding="utf-8") as fh:
     json.dump(data, fh, indent=2)
 PY
-    chmod 600 "$SERVER_CONFIG_JSON"
+    normalize_agent_json_ownership "$SERVER_CONFIG_JSON"
 }
 
 pull_remote_config() {
@@ -824,15 +844,17 @@ PY
     rm -f "$parse_log"
 
     rm -f "$tmp"
-    chmod 600 "$SERVER_CONFIG_JSON" "$CAMERA_CONFIG_JSON"
+    normalize_agent_json_ownership "$SERVER_CONFIG_JSON" "$CAMERA_CONFIG_JSON"
     log_info "Pulled camera config from server."
 }
 
 cmd_init() {
     check_root
 
+    ensure_service_user
     ensure_server_json
     ensure_camera_json
+    normalize_agent_json_ownership "$SERVER_CONFIG_JSON" "$CAMERA_CONFIG_JSON"
 
     local machine_id=""
     if [[ -f /etc/machine-id ]]; then
@@ -1184,6 +1206,7 @@ update_restart_service() {
         return
     fi
 
+    normalize_agent_json_ownership "$SERVER_CONFIG_JSON" "$CAMERA_CONFIG_JSON"
     systemctl stop "$UPDATE_SERVICE_NAME" || true
     if ! systemctl start "$UPDATE_SERVICE_NAME"; then
         log_error "Failed to start service"
@@ -1278,8 +1301,11 @@ cmd_update() {
     log_info "Camera config JSON: $UPDATE_CAMERA_JSON"
     log_info "Start services after update: $UPDATE_START_AFTER"
 
+    ensure_service_user
+    ensure_runtime_dirs
     update_ensure_config_json
     update_install_manage_script
+    normalize_agent_json_ownership "$SERVER_CONFIG_JSON" "$CAMERA_CONFIG_JSON"
 
     local current_version
     current_version=$(update_get_installed_version)
@@ -1306,8 +1332,6 @@ cmd_update() {
     fi
 
     remove_legacy_artifacts
-    ensure_service_user
-    ensure_runtime_dirs
     update_create_backup_binary "$UPDATE_BINARY_NAME"
 
     update_install_new_binary_to "$new_binary" "${UPDATE_INSTALL_DIR}/${UPDATE_BINARY_NAME}"

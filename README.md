@@ -154,6 +154,8 @@ Config files used by the scripts:
 - `/etc/sentinel_rtp_cam/camera.json`
 - `/etc/sentinel_rtp_cam/firmware-version`
 
+`server.json` and `camera.json` are expected to be owned by the `sentinel` service account with mode `0600`. `sentinel-manage` now repairs that ownership automatically during init, update, start, and restart.
+
 Agent-managed firmware jobs use `/usr/local/bin/sentinel-firmware-update`. `FIRMWARE_UPDATER_CMD` can remain unset when that default path exists.
 
 Successful updates still run through `sentinel-manage update ...` as root and write the installed firmware version to `/etc/sentinel_rtp_cam/firmware-version` for heartbeat reporting.
